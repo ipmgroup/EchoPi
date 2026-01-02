@@ -22,7 +22,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from echopi.config import AudioDeviceConfig, ChirpConfig
-from echopi.utils.distance import measure_distance
+from echopi.utils.distance import measure_distance, clear_distance_smoothing, set_smoothing_buffer_size
 from echopi.utils.latency import measure_latency
 from echopi import settings
 
@@ -73,6 +73,7 @@ class SonarGUI(QtCore.QObject):
         self.duration = 0.05
         self.amplitude = 0.8
         self.medium = "air"
+        self.filter_size = 3  # Default smoothing filter size
         # Load system latency from config file (init.json if exists, otherwise default)
         self.system_latency = settings.get_system_latency()
         
@@ -221,6 +222,7 @@ class SonarGUI(QtCore.QObject):
         self.duration_spin.setSingleStep(0.01)
         self.duration_spin.setSuffix(" s")
         self.duration_spin.setDecimals(3)
+        self.duration_spin.valueChanged.connect(self._on_duration_changed)
         chirp_layout.addRow("Duration:", self.duration_spin)
         
         self.amplitude_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -289,7 +291,16 @@ class SonarGUI(QtCore.QObject):
         self.update_rate_spin.setSingleStep(0.1)
         self.update_rate_spin.setDecimals(1)
         self.update_rate_spin.setSuffix(" Hz")
+        self.update_rate_spin.valueChanged.connect(self._on_update_rate_changed)
         system_layout.addRow("Update Rate:", self.update_rate_spin)
+        
+        self.filter_spin = QtWidgets.QSpinBox()
+        self.filter_spin.setRange(1, 10)
+        self.filter_spin.setValue(self.filter_size)
+        self.filter_spin.setSingleStep(1)
+        self.filter_spin.setToolTip("1=No filter, 3=Moderate, 5+=Heavy smoothing")
+        self.filter_spin.valueChanged.connect(self._on_filter_changed)
+        system_layout.addRow("Filter Size:", self.filter_spin)
         
         control_layout.addWidget(system_group)
         
@@ -319,6 +330,8 @@ class SonarGUI(QtCore.QObject):
         self._clear_history()
         
         self.running = True
+        # Clear smoothing buffer when starting new session
+        clear_distance_smoothing()
         self.start_btn.setText("STOP SONAR")
         self.start_btn.setStyleSheet("""
             QPushButton {
@@ -382,6 +395,7 @@ class SonarGUI(QtCore.QObject):
                 medium = str(self.medium_combo.currentText())
                 system_latency = float(self.latency_spin.value())
                 update_rate = float(self.update_rate_spin.value())
+                filter_size = int(self.filter_spin.value())
                 
                 # Create chirp configuration
                 chirp_cfg = ChirpConfig(
@@ -398,7 +412,8 @@ class SonarGUI(QtCore.QObject):
                     chirp_cfg,
                     medium=medium,
                     system_latency_s=system_latency,
-                    reference_fade=0.05
+                    reference_fade=0.05,
+                    filter_size=filter_size
                 )
                 
                 measurement_count += 1
@@ -420,6 +435,20 @@ class SonarGUI(QtCore.QObject):
                     time.sleep(actual_delay)
                 else:
                     time.sleep(1.0)
+                
+            except ValueError as e:
+                # Parameter validation error from core
+                measurement_count += 1
+                error_msg = f"Parameter validation failed: {str(e)}"
+                print(f"❌ {error_msg}")
+                self.update_signal.emit({
+                    'error': error_msg,
+                    'count': measurement_count,
+                    'exception_type': 'ValueError'
+                })
+                # Stop on validation error - parameters need to be fixed
+                self.running = False
+                break
                 
             except Exception as e:
                 measurement_count += 1
@@ -461,6 +490,8 @@ class SonarGUI(QtCore.QObject):
             # Clear error label on successful measurement
             self.error_label.setText("")
             
+            # Get smoothed distance from core (distance.py handles smoothing)
+            smoothed_distance = result.get('smoothed_distance_m', result['distance_m'])
             distance_m = result['distance_m']
             time_of_flight_s = result['time_of_flight_s']
             peak = result['refined_peak']
@@ -468,7 +499,7 @@ class SonarGUI(QtCore.QObject):
             count = result['count']
             
             # Show warning if distance is 0 or very small
-            if distance_m < 0.01:
+            if smoothed_distance < 0.01:
                 self.error_label.setText(
                     "⚠️ Distance is 0 or very small!\n"
                     "Check: 1) Speaker/mic connected? 2) Volume up? 3) Object in front?"
@@ -479,9 +510,9 @@ class SonarGUI(QtCore.QObject):
                     "Try: Increase amplitude, bring object closer, or reduce background noise"
                 )
             
-            # Update text labels
-            self.distance_label.setText(f"Distance: {distance_m:.3f} m")
-            self.distance_cm_label.setText(f"({distance_m * 100:.1f} cm)")
+            # Update text labels (use smoothed distance for display)
+            self.distance_label.setText(f"Distance: {smoothed_distance:.3f} m")
+            self.distance_cm_label.setText(f"({smoothed_distance * 100:.1f} cm)")
             self.tof_label.setText(f"Time of Flight: {time_of_flight_s * 1000:.3f} ms")
             self.peak_label.setText(f"Peak: {peak:.1f}")
             self.speed_label.setText(f"Sound Speed: {sound_speed:.1f} m/s")
@@ -499,9 +530,9 @@ class SonarGUI(QtCore.QObject):
                     "Consider restarting the application."
                 )
             
-            # Add to history
+            # Add to history (use smoothed distance)
             self.history_time.append(count)
-            self.history_distance.append(distance_m)
+            self.history_distance.append(smoothed_distance)
             self.history_tof.append(time_of_flight_s * 1000)
             
             # Limit history size - use slicing to prevent memory fragmentation
@@ -529,6 +560,8 @@ class SonarGUI(QtCore.QObject):
         self.history_time = []
         self.history_distance = []
         self.history_tof = []
+        # Clear smoothing buffer in core
+        clear_distance_smoothing()
         # Clear plot curves
         self.distance_curve.setData([], [])
         self.tof_curve.setData([], [])
@@ -650,6 +683,82 @@ class SonarGUI(QtCore.QObject):
         if settings.set_system_latency(value):
             self.system_latency = value
             print(f"✓ System latency updated: {value:.5f} s")
+    
+    def _on_filter_changed(self, value: int):
+        """Update filter size when changed."""
+        self.filter_size = value
+        set_smoothing_buffer_size(value)
+        print(f"✓ Filter size changed: {value}")
+    
+    def _on_duration_changed(self, duration: float):
+        """Validate duration vs update rate when duration changes."""
+        self.duration = duration
+        # Check if update rate is too fast for this duration
+        max_update_rate = 1.0 / (duration + 0.1)  # Add 100ms buffer cleanup time
+        current_update_rate = self.update_rate_spin.value()
+        
+        if current_update_rate > max_update_rate:
+            # Adjust update rate to safe value
+            safe_rate = round(max_update_rate, 1)
+            self.update_rate_spin.setValue(safe_rate)
+            print(f"⚠ Update rate adjusted to {safe_rate:.1f} Hz (max for {duration:.3f}s pulse)")
+    
+    def _on_update_rate_changed(self, update_rate: float):
+        """Validate update rate vs duration when update rate changes."""
+        duration = self.duration_spin.value()
+        min_period = duration + 0.1  # Pulse duration + 100ms buffer
+        max_update_rate = 1.0 / min_period
+        
+        if update_rate > max_update_rate:
+            # Clamp to maximum safe rate
+            safe_rate = round(max_update_rate, 1)
+            self.update_rate_spin.blockSignals(True)  # Prevent recursion
+            self.update_rate_spin.setValue(safe_rate)
+            self.update_rate_spin.blockSignals(False)
+            print(f"⚠ Update rate too fast! Max {safe_rate:.1f} Hz for {duration:.3f}s pulse")
+            QtWidgets.QMessageBox.warning(
+                self.win,
+                "Invalid Update Rate",
+                f"Update rate cannot exceed {safe_rate:.1f} Hz\n"
+                f"for pulse duration {duration:.3f}s\n\n"
+                f"Minimum period = pulse + 100ms buffer\n"
+                f"= {min_period:.3f}s = {max_update_rate:.1f} Hz max"
+            )
+    
+    def _on_duration_changed(self, duration: float):
+        """Validate duration vs update rate when duration changes."""
+        self.duration = duration
+        # Check if update rate is too fast for this duration
+        max_update_rate = 1.0 / (duration + 0.1)  # Add 100ms buffer cleanup time
+        current_update_rate = self.update_rate_spin.value()
+        
+        if current_update_rate > max_update_rate:
+            # Adjust update rate to safe value
+            safe_rate = round(max_update_rate, 1)
+            self.update_rate_spin.setValue(safe_rate)
+            print(f"⚠ Update rate adjusted to {safe_rate:.1f} Hz (max for {duration:.3f}s pulse)")
+    
+    def _on_update_rate_changed(self, update_rate: float):
+        """Validate update rate vs duration when update rate changes."""
+        duration = self.duration_spin.value()
+        min_period = duration + 0.1  # Pulse duration + 100ms buffer
+        max_update_rate = 1.0 / min_period
+        
+        if update_rate > max_update_rate:
+            # Clamp to maximum safe rate
+            safe_rate = round(max_update_rate, 1)
+            self.update_rate_spin.setValue(safe_rate)
+            print(f"⚠ Update rate too fast! Max {safe_rate:.1f} Hz for {duration:.3f}s pulse")
+            QtWidgets.QMessageBox.warning(
+                self.win,
+                "Invalid Update Rate",
+                f"Update rate cannot exceed {safe_rate:.1f} Hz\n"
+                f"for pulse duration {duration:.3f}s\n\n"
+                f"Minimum period = pulse + 100ms buffer\n"
+                f"= {min_period:.3f}s = {max_update_rate:.1f} Hz max"
+            )
+        set_smoothing_buffer_size(value)
+        print(f"✓ Filter size changed: {value}")
     
     def run(self):
         """Run the application."""

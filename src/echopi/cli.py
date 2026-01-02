@@ -84,6 +84,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p_dist.add_argument("--ref-fade", type=float, default=0.05, help="Reference fade for correlation (0.05=Tukey 5%%)")
     p_dist.add_argument("--medium", type=str, default="air", choices=["air", "water"], help="Propagation medium")
     p_dist.add_argument("--sys-latency", type=float, default=None, help="System latency in seconds (default: from config)")
+    p_dist.add_argument("--filter", type=int, default=3, help="Smoothing filter size (1=off, 3=moderate, 5+=heavy)")
 
     p_config = sub.add_parser("config", help="View or edit configuration")
     p_config.add_argument("--show", action="store_true", help="Show current configuration")
@@ -252,7 +253,14 @@ def cmd_distance(args: argparse.Namespace):
         print(f"Using system latency from {config_file}: {sys_latency*1000:.3f} ms")
         print()
     
-    result = measure_distance(cfg_audio, cfg_chirp, medium=args.medium, system_latency_s=sys_latency, reference_fade=args.ref_fade)
+    result = measure_distance(
+        cfg_audio, 
+        cfg_chirp, 
+        medium=args.medium, 
+        system_latency_s=sys_latency, 
+        reference_fade=args.ref_fade,
+        filter_size=args.filter
+    )
     
     print(f"Medium: {result['medium']}")
     print(f"Sound speed: {result['sound_speed']:.1f} m/s")
@@ -263,7 +271,10 @@ def cmd_distance(args: argparse.Namespace):
     print(f"Peak: {result['peak']:.1f} (refined: {result['refined_peak']:.1f})")
     print()
     print("="*60)
-    print(f"До препятствия {result['distance_m']:.2f} м ({result['distance_m']*100:.0f} см)")
+    distance = result.get('smoothed_distance_m', result['distance_m'])
+    print(f"До препятствия {distance:.2f} м ({distance*100:.0f} см)")
+    if 'smoothed_distance_m' in result and args.filter > 1:
+        print(f"(raw: {result['distance_m']:.2f} м, filter: {args.filter})")
     print("="*60)
 
 
