@@ -1,0 +1,7 @@
+numpy
+scipy
+sounddevice
+soundfile
+pyqtgraph
+PyQt5
+psutil

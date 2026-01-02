@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "echopi"
+version = "0.0.1"
+description = "EchoPi sonar prototyping toolkit"
+authors = [{name = "EchoPi"}]
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "sounddevice",
+    "soundfile",
+    "pyqtgraph",
+    "PyQt5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+echopi = "echopi.cli:main"
