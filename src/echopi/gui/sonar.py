@@ -217,9 +217,9 @@ class SonarGUI(QtCore.QObject):
         chirp_layout.addRow("End Freq:", self.end_freq_spin)
         
         self.duration_spin = QtWidgets.QDoubleSpinBox()
-        self.duration_spin.setRange(0.01, 1.0)
+        self.duration_spin.setRange(0.001, 1.0)
         self.duration_spin.setValue(self.duration)
-        self.duration_spin.setSingleStep(0.01)
+        self.duration_spin.setSingleStep(0.001)
         self.duration_spin.setSuffix(" s")
         self.duration_spin.setDecimals(3)
         self.duration_spin.valueChanged.connect(self._on_duration_changed)
@@ -295,10 +295,10 @@ class SonarGUI(QtCore.QObject):
         system_layout.addRow("Update Rate:", self.update_rate_spin)
         
         self.filter_spin = QtWidgets.QSpinBox()
-        self.filter_spin.setRange(1, 10)
+        self.filter_spin.setRange(0, 10)
         self.filter_spin.setValue(self.filter_size)
         self.filter_spin.setSingleStep(1)
-        self.filter_spin.setToolTip("1=No filter, 3=Moderate, 5+=Heavy smoothing")
+        self.filter_spin.setToolTip("0=Filter off, 1=No smoothing, 3=Moderate, 5+=Heavy")
         self.filter_spin.valueChanged.connect(self._on_filter_changed)
         system_layout.addRow("Filter Size:", self.filter_spin)
         
@@ -687,8 +687,13 @@ class SonarGUI(QtCore.QObject):
     def _on_filter_changed(self, value: int):
         """Update filter size when changed."""
         self.filter_size = value
-        set_smoothing_buffer_size(value)
-        print(f"✓ Filter size changed: {value}")
+        if value > 1:
+            set_smoothing_buffer_size(value)
+            print(f"✓ Filter size changed: {value}")
+        elif value == 1:
+            print("✓ Filter: no smoothing (raw values)")
+        else:
+            print("✓ Filter: OFF")
     
     def _on_duration_changed(self, duration: float):
         """Validate duration vs update rate when duration changes."""
@@ -757,8 +762,6 @@ class SonarGUI(QtCore.QObject):
                 f"Minimum period = pulse + 100ms buffer\n"
                 f"= {min_period:.3f}s = {max_update_rate:.1f} Hz max"
             )
-        set_smoothing_buffer_size(value)
-        print(f"✓ Filter size changed: {value}")
     
     def run(self):
         """Run the application."""

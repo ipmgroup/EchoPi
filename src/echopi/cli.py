@@ -84,7 +84,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p_dist.add_argument("--ref-fade", type=float, default=0.05, help="Reference fade for correlation (0.05=Tukey 5%%)")
     p_dist.add_argument("--medium", type=str, default="air", choices=["air", "water"], help="Propagation medium")
     p_dist.add_argument("--sys-latency", type=float, default=None, help="System latency in seconds (default: from config)")
-    p_dist.add_argument("--filter", type=int, default=3, help="Smoothing filter size (1=off, 3=moderate, 5+=heavy)")
+    p_dist.add_argument("--filter", type=int, default=3, help="Smoothing filter size (0=off, 1=raw, 3=moderate, 5+=heavy)")
 
     p_config = sub.add_parser("config", help="View or edit configuration")
     p_config.add_argument("--show", action="store_true", help="Show current configuration")

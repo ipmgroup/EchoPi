@@ -75,17 +75,9 @@ def measure_distance(
         raise ValueError("Start frequency must be less than end frequency")
     if not (0.0 <= cfg_chirp.amplitude <= 1.0):
         raise ValueError(f"Amplitude must be in [0, 1], got {cfg_chirp.amplitude}")
-    if filter_size < 1:
-        raise ValueError(f"Filter size must be >= 1, got {filter_size}")
+    if filter_size < 0:
+        raise ValueError(f"Filter size must be >= 0, got {filter_size}")
     
-    Returns:
-        dict с результатами:
-            - time_of_flight_s: время распространения до цели и обратно
-            - distance_m: расстояние до цели в метрах
-            - lag_samples: задержка в отсчетах
-            - peak: пик корреляции (амплитуда отраженного сигнала)
-            - sound_speed: использованная скорость звука
-    """
     # Генерация излучаемого чирпа БЕЗ окна (максимальная энергия)
     cfg_tx = ChirpConfig(
         start_freq=cfg_chirp.start_freq,
@@ -171,7 +163,7 @@ def measure_distance(
     # Расстояние: R = (c × t) / 2  (делим на 2, т.к. туда и обратно)
     distance_m = (sound_speed * time_of_flight_s) / 2.0
     
-    # Apply smoothing if enabled
+    # Apply smoothing if enabled and filter_size > 1 (0 or 1 = no filtering)
     global _distance_smoothing_buffer
     if enable_smoothing and filter_size > 1:
         # Update buffer size if changed
