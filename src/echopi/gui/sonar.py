@@ -74,7 +74,7 @@ class SonarGUI(QtCore.QObject):
         self.amplitude = 0.8
         self.medium = "air"
         # Load system latency from config file (init.json if exists, otherwise default)
-        self.system_latency = settings.get_system_latency(verbose=True)
+        self.system_latency = settings.get_system_latency()
         
         # Measurement history
         self.history_time = []
@@ -223,7 +223,7 @@ class SonarGUI(QtCore.QObject):
         self.duration_spin.setDecimals(3)
         chirp_layout.addRow("Duration:", self.duration_spin)
         
-        self.amplitude_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.amplitude_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.amplitude_slider.setRange(10, 100)
         self.amplitude_slider.setValue(int(self.amplitude * 100))
         self.amplitude_value_label = QtWidgets.QLabel(f"{self.amplitude:.2f}")
@@ -248,11 +248,12 @@ class SonarGUI(QtCore.QObject):
         system_layout.addRow("Medium:", self.medium_combo)
         
         self.latency_spin = QtWidgets.QDoubleSpinBox()
-        self.latency_spin.setRange(0.0, 0.1)
-        self.latency_spin.setValue(self.system_latency)
+        self.latency_spin.setRange(0.0, 1.0)
+        self.latency_spin.setDecimals(5)
         self.latency_spin.setSingleStep(0.0001)
-        self.latency_spin.setDecimals(6)
         self.latency_spin.setSuffix(" s")
+        self.latency_spin.setValue(self.system_latency)  # Now set value after decimals
+        self.latency_spin.valueChanged.connect(self._on_latency_changed)
         system_layout.addRow("Sys Latency:", self.latency_spin)
         
         # Latency measurement button
@@ -410,8 +411,13 @@ class SonarGUI(QtCore.QObject):
                 self.update_signal.emit(result_copy)
                 
                 # Wait before next measurement
+                # Add minimum delay to allow audio buffer to settle
                 if update_rate > 0:
-                    time.sleep(1.0 / update_rate)
+                    interval = 1.0 / update_rate
+                    # Ensure at least 100ms delay after chirp for buffer cleanup
+                    min_delay = duration + 0.1
+                    actual_delay = max(interval, min_delay)
+                    time.sleep(actual_delay)
                 else:
                     time.sleep(1.0)
                 
@@ -638,6 +644,12 @@ class SonarGUI(QtCore.QObject):
                 "Error",
                 f"Failed to process result:\n{e}"
             )
+    
+    def _on_latency_changed(self, value: float):
+        """Save latency value to config when manually changed."""
+        if settings.set_system_latency(value):
+            self.system_latency = value
+            print(f"✓ System latency updated: {value:.5f} s")
     
     def run(self):
         """Run the application."""

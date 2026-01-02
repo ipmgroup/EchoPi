@@ -28,7 +28,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
     p_chirp = sub.add_parser("generate-chirp", help="Save chirp to wav file")
     p_chirp.add_argument("output", type=Path)
-    p_chirp.add_argument("--sr", type=int, default=96000)
+    p_chirp.add_argument("--sr", type=int, default=None)
     p_chirp.add_argument("--start", type=float, default=2000)
     p_chirp.add_argument("--end", type=float, default=20000)
     p_chirp.add_argument("--duration", type=float, default=0.05)
@@ -97,17 +97,25 @@ def _add_audio_flags(parser: argparse.ArgumentParser, playback_only: bool = Fals
         parser.add_argument("--play-device", type=str, default=None, help="Playback device index or name")
     if not playback_only:
         parser.add_argument("--rec-device", type=str, default=None, help="Input device index or name")
-    parser.add_argument("--sr", type=int, default=96000, help="Sample rate")
+    parser.add_argument("--sr", type=int, default=None, help="Sample rate (default from config file or 96000)")
     parser.add_argument("--frames", type=int, default=2048, help="Frames per buffer")
 
 
 def _build_audio_cfg(args: argparse.Namespace) -> AudioDeviceConfig:
-    return AudioDeviceConfig(
-        play_device=None if getattr(args, "play_device", None) is None else _parse_device(args.play_device),
-        rec_device=None if getattr(args, "rec_device", None) is None else _parse_device(args.rec_device),
-        sample_rate=args.sr,
-        frames_per_buffer=args.frames,
-    )
+    # Start with config from file
+    cfg = AudioDeviceConfig.from_file()
+    
+    # Override with command-line arguments if provided
+    if hasattr(args, 'play_device') and args.play_device is not None:
+        cfg.play_device = _parse_device(args.play_device)
+    if hasattr(args, 'rec_device') and args.rec_device is not None:
+        cfg.rec_device = _parse_device(args.rec_device)
+    if hasattr(args, 'sr') and args.sr is not None:
+        cfg.sample_rate = args.sr
+    if hasattr(args, 'frames') and args.frames is not None:
+        cfg.frames_per_buffer = args.frames
+    
+    return cfg
 
 
 def _parse_device(value: str | None) -> int | str | None:

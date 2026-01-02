@@ -55,7 +55,7 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
     # Show warning if running directly (not via Core echopi CLI)
     if show_warning:
         msg = QtWidgets.QMessageBox()
-        msg.setIcon(QtWidgets.QMessageBox.Warning)
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg.setWindowTitle("⚠️ Scope GUI Running Without Core echopi")
         msg.setText("This GUI is running in STANDALONE mode")
         msg.setInformativeText(
@@ -66,10 +66,10 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
             "Direct execution is for TESTING ONLY.\n"
             "Continue anyway?"
         )
-        msg.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        msg.setDefaultButton(QtWidgets.QMessageBox.No)
+        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
         
-        if msg.exec() != QtWidgets.QMessageBox.Yes:
+        if msg.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
             sys.exit(0)
 
     win = pg.GraphicsLayoutWidget(show=True, title="EchoPi Live Scope")
@@ -102,9 +102,13 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
     # For demo mode
     demo_phase = [0.0]
 
+    # Debug counter
+    debug_counter = [0]
+    
     def audio_callback(indata, frames, time_info, status):  # noqa: ANN001, ANN202
         # Fast callback - minimal operations
         if status:
+            print(f"Audio callback status: {status}", file=sys.stderr)
             return
             
         try:
@@ -120,8 +124,11 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
                     demo_phase[0] = (demo_phase[0] + frames / cfg.sample_rate) % 1.0
                     data = signal
                 else:
-                    # Get data from microphone
-                    data = indata[:, 0] if indata.ndim == 2 else indata
+                    # Get data from microphone - InputStream gives (frames, channels) array
+                    if indata.ndim == 2:
+                        data = indata[:, 0].flatten()
+                    else:
+                        data = indata.flatten()
                 
                 # Simple ring buffer write
                 n = min(len(data), buffer_size)
@@ -169,15 +176,31 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
     def update_gui():
         """GUI update - called by timer in main thread"""
         try:
-            # Switch buffers
+            # Switch buffers and read ring buffer in correct order
             with buffer_lock:
                 current_buffer[0] = 1 - current_buffer[0]
                 # Читаем из другого буфера
-                data = (audio_buffer_b if current_buffer[0] == 0 else audio_buffer_a).copy()
+                buf = audio_buffer_b if current_buffer[0] == 0 else audio_buffer_a
+                pos = write_pos[0]
+                
+                # Read ring buffer in chronological order: from write_pos to end, then from start to write_pos
+                if pos == 0:
+                    data = buf.copy()
+                else:
+                    data = np.concatenate([buf[pos:], buf[:pos]])
             
-            # Update waveform
+            # Update waveform - remove DC offset and set proper Y range
+            data_centered = data - np.mean(data)
             t = np.arange(len(data), dtype=np.float32) / cfg.sample_rate
-            waveform_curve.setData(t, data)
+            waveform_curve.setData(t, data_centered)
+            
+            # Auto-range Y axis based on signal amplitude
+            if len(data_centered) > 0:
+                max_amp = np.max(np.abs(data_centered))
+                if max_amp > 0:
+                    waveform_plot.setYRange(-max_amp * 1.1, max_amp * 1.1)
+                else:
+                    waveform_plot.setYRange(-1.0, 1.0)
             
             # Calculate spectrum
             windowed = data * np.hanning(len(data))
@@ -227,5 +250,5 @@ if __name__ == "__main__":
     print("=" * 70)
     print()
     
-    cfg = AudioDeviceConfig()
+    cfg = AudioDeviceConfig.from_file()
     run_scope(cfg, update_interval_ms=500, demo_mode=True, show_warning=True)

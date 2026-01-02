@@ -90,6 +90,11 @@ def play_and_record(play_signal: np.ndarray, cfg: AudioDeviceConfig, extra_recor
         latency=cfg.latency,
     ) as stream:
         
+        # Очистка буфера: читаем и игнорируем данные перед измерением
+        # Это удаляет остатки предыдущих измерений
+        for _ in range(3):  # 3 итерации для очистки
+            stream.read(cfg.frames_per_buffer)
+        
         idx = 0
         while idx < record_frames:
             # Подготовка данных для воспроизведения

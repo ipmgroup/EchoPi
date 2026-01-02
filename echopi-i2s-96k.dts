@@ -1,0 +1,62 @@
+/*
+ * Device Tree Overlay for bidirectional I2S at 96 kHz
+ * MAX98357A (output) + INMP441 (input)
+ * Using asoc-simple-card with spdif-transmitter (playback) and spdif-receiver (capture)
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+    compatible = "brcm,bcm2835";
+
+    fragment@0 {
+        target-path = "/";
+        __overlay__ {
+            codec_out: spdif-transmitter {
+                #sound-dai-cells = <0>;
+                compatible = "linux,spdif-dit";
+                status = "okay";
+            };
+
+            codec_in: spdif-receiver {
+                #sound-dai-cells = <0>;
+                compatible = "linux,spdif-dir";
+                status = "okay";
+            };
+        };
+    };
+
+    fragment@1 {
+        target = <&i2s_clk_consumer>;
+        __overlay__ {
+            status = "okay";
+        };
+    };
+
+    fragment@2 {
+        target-path = "/";
+        __overlay__ {
+            sound {
+                compatible = "simple-audio-card";
+                simple-audio-card,name = "echopi-i2s";
+                status = "okay";
+
+                simple-audio-card,format = "i2s";
+                
+                simple-audio-card,bitclock-master = <&dailink_master>;
+                simple-audio-card,frame-master = <&dailink_master>;
+
+                dailink_master: simple-audio-card,cpu {
+                    sound-dai = <&i2s_clk_consumer>;
+                    dai-tdm-slot-num = <2>;
+                    dai-tdm-slot-width = <32>;
+                };
+
+                simple-audio-card,codec {
+                    sound-dai = <&codec_out>, <&codec_in>;
+                };
+            };
+        };
+    };
+};
