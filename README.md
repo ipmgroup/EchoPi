@@ -255,6 +255,17 @@ Intelligent peak selection algorithm filters weak peaks and handles multiple ref
 
 This project is for research and prototyping purposes.
 
+## Roadmap
+
+### Planned Features
+
+- **System Service (daemon)**: Run EchoPi as a background service for continuous operation
+- **ArduPilot Integration**: MAVLink support for integration with ArduPilot autopilot
+  - Distance sensor data transmission (DISTANCE_SENSOR message)
+  - Command/control interface for start/stop operations
+  - Mode switching support
+  - Real-time distance data streaming
+
 ## Version
 
 Current version: 0.0.1
