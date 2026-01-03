@@ -79,12 +79,23 @@ class PersistentAudioStream:
     def play_and_record(
         self, 
         play_signal: np.ndarray, 
-        extra_record_seconds: float = 0.1
-    ) -> np.ndarray:
+        extra_record_seconds: float = 0.1,
+        return_tx_index: bool = True
+    ) -> tuple[np.ndarray, int] | np.ndarray:
         """Воспроизведение и запись с использованием persistent stream.
 
         Встроенный pacing (rate-limit) предотвращает слишком частые вызовы,
         которые могут перегружать аудио-драйвер при экстремальных настройках.
+        
+        Args:
+            play_signal: Сигнал для воспроизведения (TX chirp)
+            extra_record_seconds: Дополнительное время записи после TX
+            return_tx_index: Если True, возвращать (recorded, tx_sample_index)
+        
+        Returns:
+            Если return_tx_index=True: (recorded, tx_sample_index)
+                где tx_sample_index - индекс начала TX chirp в recorded
+            Если return_tx_index=False: только recorded (для обратной совместимости)
         """
         if self.stream is None:
             self._create_stream()
@@ -120,10 +131,15 @@ class PersistentAudioStream:
         cooldown_s = 0.020
         start_t = time.monotonic()
         
+        # TX time anchor: индекс начала chirp в recorded.
+        # Для simplex системы (play/record одновременно) TX начинается с первого блока.
+        # Учитываем задержку priming - после priming первый write начинает TX.
+        tx_sample_index = 0  # TX chirp начинается с индекса 0 в recorded
+        
         try:
             idx = 0
             while idx < total_frames:
-                chunk_out = play_signal[idx : idx + self.cfg.frames_per_buffer]
+                chunk_out = play_signal[idx:idx + self.cfg.frames_per_buffer]
                 if len(chunk_out) < self.cfg.frames_per_buffer:
                     chunk_out = np.pad(
                         chunk_out, 
@@ -142,7 +158,11 @@ class PersistentAudioStream:
                 time.sleep(min_cycle_s - elapsed)
 
             self._next_allowed_time = time.monotonic() + cooldown_s
-            return recorded
+            
+            if return_tx_index:
+                return recorded, tx_sample_index
+            else:
+                return recorded
             
         except Exception as e:
             print(f"Error in play_and_record: {e}")
@@ -188,22 +208,30 @@ def play_and_record_safe(
     play_signal: np.ndarray, 
     cfg: AudioDeviceConfig, 
     extra_record_seconds: float = 0.1,
-    use_global: bool = True
-) -> np.ndarray:
+    use_global: bool = True,
+    return_tx_index: bool = True
+) -> tuple[np.ndarray, int] | np.ndarray:
     """Безопасная версия play_and_record с persistent stream.
     
     Args:
-        play_signal: Сигнал для воспроизведения
+        play_signal: Сигнал для воспроизведения (TX chirp)
         cfg: Конфигурация audio
         extra_record_seconds: Дополнительное время записи
         use_global: Использовать глобальный stream (рекомендуется для GUI)
+        return_tx_index: Если True, возвращать (recorded, tx_sample_index)
     
     Returns:
-        Записанный сигнал
+        Если return_tx_index=True: (recorded, tx_sample_index)
+            где tx_sample_index - индекс начала TX chirp в recorded
+        Если return_tx_index=False: только recorded (для обратной совместимости)
     """
     if use_global:
         stream = get_global_stream(cfg)
-        return stream.play_and_record(play_signal, extra_record_seconds)
+        return stream.play_and_record(
+            play_signal, extra_record_seconds, return_tx_index
+        )
     else:
         with PersistentAudioStream(cfg) as stream:
-            return stream.play_and_record(play_signal, extra_record_seconds)
+            return stream.play_and_record(
+                play_signal, extra_record_seconds, return_tx_index
+            )

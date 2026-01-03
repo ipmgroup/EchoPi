@@ -6,7 +6,7 @@ import time
 from echopi.config import AudioDeviceConfig, ChirpConfig
 from echopi.dsp.chirp import generate_chirp, normalize
 from echopi.dsp.correlation import cross_correlation, find_peaks, parabolic_interpolate
-from echopi.io.audio import get_global_stream, close_global_stream
+from echopi.io.audio_safe import get_global_stream, close_global_stream
 
 
 def _pick_latency_from_recording(
@@ -98,6 +98,7 @@ def measure_latency(
         _ = stream.play_and_record(
             np.zeros(cfg_audio.frames_per_buffer, dtype=np.float32),
             extra_record_seconds=0.0,
+            return_tx_index=False,  # Не нужен TX index для warmup
         )
     except Exception:
         pass
@@ -115,7 +116,8 @@ def measure_latency(
 
     for i in range(repeats):
         t0 = time.monotonic()
-        recorded = stream.play_and_record(chirp, extra_record_seconds=extra_record_seconds)
+        # Для калибровки латентности используем старый API (только recorded)
+        recorded = stream.play_and_record(chirp, extra_record_seconds=extra_record_seconds, return_tx_index=False)
         (
             latency_s,
             lag_samp,

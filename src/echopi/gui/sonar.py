@@ -412,7 +412,7 @@ class SonarGUI(QtCore.QObject):
             dummy_signal = np.zeros(int(self.cfg.sample_rate * 0.001), dtype=np.float32)
             print("  Warming up audio hardware (this may take a few seconds)...")
             for i in range(10):  # 10 warmup циклов для полной стабилизации
-                stream.play_and_record(dummy_signal, extra_record_seconds=0.01)
+                stream.play_and_record(dummy_signal, extra_record_seconds=0.01, return_tx_index=False)
                 time.sleep(0.05)  # 50ms пауза между warmup циклами
             print("✓ Audio stream initialized and stabilized")
         except Exception as e:

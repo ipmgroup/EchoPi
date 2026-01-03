@@ -7,7 +7,7 @@ from functools import lru_cache
 from echopi.config import AudioDeviceConfig, ChirpConfig
 from echopi.dsp.chirp import generate_chirp, normalize
 from echopi.dsp.correlation import cross_correlation, parabolic_interpolate, find_peaks
-from echopi.io.audio import get_global_stream
+from echopi.io.audio_safe import get_global_stream
 
 
 # Скорость звука (м/с)
@@ -210,7 +210,8 @@ def measure_distance(
     
     # Use global persistent stream for stable repeated measurements
     stream = get_global_stream(cfg_audio)
-    recorded = stream.play_and_record(chirp_tx, extra_record_seconds=extra_rec)
+    # Получаем TX time anchor для точной корреляции
+    recorded, tx_sample_index = stream.play_and_record(chirp_tx, extra_record_seconds=extra_rec)
     
     # Проверка на клиппинг записанного сигнала
     recorded_max = np.max(np.abs(recorded))
@@ -241,6 +242,16 @@ def measure_distance(
     
     # Корреляция с эталоном (matched filter: используем реверсированный чирп)
     # Для matched filter нужно использовать реверсированный эталон
+    #
+    # ВАЖНО: TX time anchor (tx_sample_index) фиксирует момент начала TX chirp
+    # в записанном сигнале. Для simplex систем (play/record одновременно)
+    # tx_sample_index=0, т.е. TX chirp начинается с recorded[0].
+    # Это критично для точного расчета задержки эха и расстояния.
+    #
+    # В корреляции:
+    # - lag = 0 означает, что эхо пришло в момент tx_sample_index
+    # - lag > 0 означает задержку эха относительно TX
+    # - Из lag можно вычислить расстояние: distance = (lag * sound_speed) / (2 * sample_rate)
     chirp_ref_reversed = chirp_ref[::-1]
     lag_samples, peak, corr = cross_correlation(chirp_ref_reversed, recorded)
 
