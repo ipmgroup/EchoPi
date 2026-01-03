@@ -15,7 +15,7 @@ from echopi import settings
 def main():
     # Конфигурация
     cfg_audio = AudioDeviceConfig(
-        sample_rate=96000,
+        sample_rate=48000,
         frames_per_buffer=1024,
     )
     

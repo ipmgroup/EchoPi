@@ -16,10 +16,11 @@ CONFIG_FILE = CONFIG_DIR / "init.json"
 # Default settings
 DEFAULT_SETTINGS = {
     "system_latency_s": 0.00121,  # Default system latency in seconds
+    "min_distance_m": 0.0,        # Default min distance for echo window (meters)
     "max_distance_m": 17.0,       # Default max distance for echo window (meters)
     # GUI defaults (persisted in init.json)
-    "start_freq_hz": 2000.0,
-    "end_freq_hz": 20000.0,
+    "start_freq_hz": 1000.0,
+    "end_freq_hz": 10000.0,
     "chirp_duration_s": 0.05,
     "amplitude": 0.8,
     "medium": "air",
@@ -46,6 +47,7 @@ def get_gui_settings() -> dict[str, Any]:
         "medium": s.get("medium", DEFAULT_SETTINGS["medium"]),
         "update_rate_hz": s.get("update_rate_hz", DEFAULT_SETTINGS["update_rate_hz"]),
         "filter_size": s.get("filter_size", DEFAULT_SETTINGS["filter_size"]),
+        "min_distance_m": s.get("min_distance_m", DEFAULT_SETTINGS["min_distance_m"]),
         "max_distance_m": s.get("max_distance_m", DEFAULT_SETTINGS["max_distance_m"]),
         "system_latency_s": s.get("system_latency_s", DEFAULT_SETTINGS["system_latency_s"]),
     }
@@ -186,6 +188,50 @@ def set_max_distance(max_distance_m: float) -> bool:
     if value <= 0:
         raise ValueError(f"max_distance_m must be > 0, got {value}")
     return save_settings({"max_distance_m": value})
+
+
+def get_min_distance(verbose: bool = False) -> float:
+    """Get min distance (meters) used to filter close reflections."""
+    settings = load_settings()
+    value = settings.get("min_distance_m", DEFAULT_SETTINGS["min_distance_m"])
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        value_f = float(DEFAULT_SETTINGS["min_distance_m"])
+
+    if verbose:
+        if CONFIG_FILE.exists():
+            print(f"✓ Min distance loaded from {CONFIG_FILE}: {value_f:.2f} m")
+        else:
+            print(f"ℹ Using default min distance: {value_f:.2f} m (config file not found)")
+
+    return value_f
+
+
+def set_min_distance(min_distance_m: float) -> bool:
+    """Save min distance (meters) to configuration."""
+    try:
+        value = float(min_distance_m)
+    except (TypeError, ValueError):
+        raise ValueError(f"min_distance_m must be a number, got {min_distance_m!r}")
+    if value < 0:
+        raise ValueError(f"min_distance_m must be >= 0, got {value}")
+    return save_settings({"min_distance_m": value})
+
+
+def get_start_freq() -> float:
+    """Get start frequency (Hz) from config."""
+    return _get_value("start_freq_hz", DEFAULT_SETTINGS["start_freq_hz"])
+
+
+def get_end_freq() -> float:
+    """Get end frequency (Hz) from config."""
+    return _get_value("end_freq_hz", DEFAULT_SETTINGS["end_freq_hz"])
+
+
+def get_amplitude() -> float:
+    """Get amplitude (0-1) from config."""
+    return _get_value("amplitude", DEFAULT_SETTINGS["amplitude"])
 
 
 def get_config_file_path() -> Path:

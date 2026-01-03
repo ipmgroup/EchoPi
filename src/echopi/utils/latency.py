@@ -14,7 +14,7 @@ def _pick_latency_from_recording(
     recorded: np.ndarray,
     chirp_ref: np.ndarray,
     sample_rate: int,
-    max_latency_s: float = 0.005,
+    max_latency_s: float = 0.003,  # Reduced from 0.005 to 0.003 (3ms) to avoid picking echoes
     min_latency_s: float = 0.0005,
 ) -> tuple[float, int, float, int, float, np.ndarray]:
     """Return (latency_s, lag_samples, peak, global_lag, global_peak, corr)."""
@@ -32,44 +32,21 @@ def _pick_latency_from_recording(
     corr_window = corr[start_idx:end_idx]
 
     if corr_window.size:
-        window_max = float(np.max(corr_window))
-        med = float(np.median(corr_window))
-        mad = float(np.median(np.abs(corr_window - med)))
-        noise_floor = med + 8.0 * mad
-        # Threshold should depend on the noise floor, not on the strongest peak.
-        # If a reflection dominates the window, tying the threshold to window_max
-        # can hide the earlier (direct-path) peak.
-        threshold = noise_floor
-
-        # Consider enough peaks so an early direct-path peak isn't missed when a
-        # later reflection is much stronger.
-        peaks = find_peaks(corr_window, num_peaks=200, min_distance=10)
+        # For latency measurement, we want the EARLIEST strong peak in a narrow window
+        # This is the direct signal path (microphone/speaker should be close for latency calibration)
+        # We take earliest (chronologically first) to avoid echoes/reflections
+        peaks = find_peaks(corr_window, num_peaks=30, min_distance=10)
+        
         if peaks:
-            max_peak = float(peaks[0][1])
+            # Filter peaks to only strong ones (>50% of strongest peak)
+            max_amp = peaks[0][1]  # peaks sorted by amplitude descending
+            strong_peaks = [(idx, amp) for idx, amp in peaks if amp > max_amp * 0.5]
+            
+            # Take the EARLIEST (lowest index) among strong peaks
+            earliest_idx = min(strong_peaks, key=lambda p: p[0])[0]
+            best_peak_idx = int(start_idx + earliest_idx)
         else:
-            max_peak = window_max
-
-        # Prefer the earliest *strong* peak (direct path): strong means it's not
-        # only above threshold, but also a decent fraction of the strongest peak.
-        strong_fraction = 0.005
-        candidates = [
-            (start_idx + idx_w, float(val))
-            for idx_w, val in peaks
-            if float(val) >= threshold and float(val) >= max_peak * strong_fraction
-        ]
-        if candidates:
-            best_peak_idx = int(min(candidates, key=lambda t: t[0])[0])
-        else:
-            # Fallback: earliest above threshold (can still happen in noisy runs)
-            candidates2 = [
-                (start_idx + idx_w, float(val))
-                for idx_w, val in peaks
-                if float(val) >= threshold
-            ]
-            if candidates2:
-                best_peak_idx = int(min(candidates2, key=lambda t: t[0])[0])
-            else:
-                best_peak_idx = int(start_idx + np.argmax(corr_window))
+            best_peak_idx = int(start_idx + np.argmax(corr_window))
     else:
         best_peak_idx = int(np.argmax(corr))
 

@@ -276,9 +276,39 @@ def monitor_microphone(cfg: AudioDeviceConfig, callback):
 
 
 def play_and_record(play_signal: np.ndarray, cfg: AudioDeviceConfig, extra_record_seconds: float = 0.1) -> np.ndarray:
-    """Play signal and simultaneously record via a persistent duplex stream."""
-    stream = get_global_stream(cfg)
-    return stream.play_and_record(play_signal, extra_record_seconds=extra_record_seconds)
+    """Play signal and simultaneously record.
+    
+    Uses direct sd.playrec for accurate synchronization instead of PersistentAudioStream.
+    """
+    if extra_record_seconds < 0:
+        raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
+    
+    play_signal = np.asarray(play_signal, dtype=np.float32)
+    
+    # Play and record simultaneously (synchronized by sounddevice)
+    recording = sd.playrec(
+        play_signal.reshape(-1, 1),
+        samplerate=cfg.sample_rate,
+        channels=1,
+        dtype='float32',
+        device=(cfg.rec_device, cfg.play_device),
+        blocking=True
+    ).flatten()
+    
+    # Record extra samples after playback ends
+    extra_samples = int(extra_record_seconds * cfg.sample_rate)
+    if extra_samples > 0:
+        extra = sd.rec(
+            extra_samples,
+            samplerate=cfg.sample_rate,
+            channels=1,
+            dtype='float32',
+            device=cfg.rec_device,
+            blocking=True
+        ).flatten()
+        recording = np.concatenate([recording, extra])
+    
+    return recording
 
 
 def rms_level(samples: Iterable[float]) -> float:

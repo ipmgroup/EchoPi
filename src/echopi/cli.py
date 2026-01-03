@@ -74,8 +74,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
     p_lat = sub.add_parser("latency", help="Measure play/rec latency via correlation")
     _add_audio_flags(p_lat)
-    p_lat.add_argument("--start", type=float, default=2000)
-    p_lat.add_argument("--end", type=float, default=20000)
+    p_lat.add_argument("--start", type=float, default=1000)
+    p_lat.add_argument("--end", type=float, default=10000)
     p_lat.add_argument("--duration", type=float, default=0.05)
     p_lat.add_argument("--amp", type=float, default=0.8)
     p_lat.add_argument("--fade", type=float, default=0.0)
@@ -85,14 +85,20 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
     p_dist = sub.add_parser("distance", help="Measure distance to target via sonar")
     _add_audio_flags(p_dist)
-    p_dist.add_argument("--start", type=float, default=2000, help="Start frequency (Hz)")
-    p_dist.add_argument("--end", type=float, default=20000, help="End frequency (Hz)")
+    p_dist.add_argument("--start", type=float, default=None, help="Start frequency (Hz, default: from config)")
+    p_dist.add_argument("--end", type=float, default=None, help="End frequency (Hz, default: from config)")
     p_dist.add_argument("--duration", type=float, default=0.05, help="Chirp duration (s)")
-    p_dist.add_argument("--amp", type=float, default=0.8, help="Amplitude 0-1")
+    p_dist.add_argument("--amp", type=float, default=None, help="Amplitude 0-1 (default: from config)")
     p_dist.add_argument("--fade", type=float, default=0.0, help="TX fade (0=max energy, not used)")
     p_dist.add_argument("--ref-fade", type=float, default=0.05, help="Reference fade for correlation (0.05=Tukey 5%%)")
     p_dist.add_argument("--medium", type=str, default="air", choices=["air", "water"], help="Propagation medium")
     p_dist.add_argument("--sys-latency", type=float, default=None, help="System latency in seconds (default: from config)")
+    p_dist.add_argument(
+        "--min-distance",
+        type=float,
+        default=None,
+        help="Min distance in meters for search window (default: from config)",
+    )
     p_dist.add_argument(
         "--max-distance",
         type=float,
@@ -287,7 +293,13 @@ def cmd_latency(args: argparse.Namespace):
 
 def cmd_distance(args: argparse.Namespace):
     cfg_audio = _build_audio_cfg(args)
-    cfg_chirp = ChirpConfig(start_freq=args.start, end_freq=args.end, duration=args.duration, amplitude=args.amp, fade_fraction=args.fade)
+    
+    # Get parameters from config if not specified
+    start_freq = args.start if args.start is not None else settings.get_start_freq()
+    end_freq = args.end if args.end is not None else settings.get_end_freq()
+    amplitude = args.amp if args.amp is not None else settings.get_amplitude()
+    
+    cfg_chirp = ChirpConfig(start_freq=start_freq, end_freq=end_freq, duration=args.duration, amplitude=amplitude, fade_fraction=args.fade)
     
     # Use system latency from config if not specified
     sys_latency = args.sys_latency
@@ -297,12 +309,18 @@ def cmd_distance(args: argparse.Namespace):
         print(f"Using system latency from {config_file}: {sys_latency*1000:.3f} ms")
         print()
     
+    # Use min_distance from config if not specified
+    min_dist = args.min_distance
+    if min_dist is None:
+        min_dist = settings.get_min_distance()
+    
     result = measure_distance(
         cfg_audio, 
         cfg_chirp, 
         medium=args.medium, 
         system_latency_s=sys_latency, 
         reference_fade=args.ref_fade,
+        min_distance_m=min_dist,
         max_distance_m=args.max_distance,
         filter_size=args.filter
     )

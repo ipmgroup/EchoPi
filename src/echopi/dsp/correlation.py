@@ -4,12 +4,38 @@ import numpy as np
 
 
 def cross_correlation(ref: np.ndarray, sig: np.ndarray) -> tuple[int, float, np.ndarray]:
+    """Cross-correlation between reference signal and recorded signal using FFT.
+    
+    FFT-based correlation is more accurate and faster for large signals.
+    
+    Returns:
+        lag: Sample index in corr array where peak is found
+        peak: Peak correlation value
+        corr: Full correlation array
+    """
     ref = ref.astype(np.float32)
     sig = sig.astype(np.float32)
-    corr = np.correlate(sig, ref, mode="full")
-    lag = int(np.argmax(corr) - (len(ref) - 1))
-    peak = float(corr[lag + len(ref) - 1])
-    return lag, peak, corr
+    
+    # FFT-based correlation: IFFT(FFT(sig) * conj(FFT(ref)))
+    n = len(sig) + len(ref) - 1
+    n_fft = 2 ** int(np.ceil(np.log2(n)))
+    
+    # FFT of both signals
+    fft_ref = np.fft.fft(ref, n=n_fft)
+    fft_sig = np.fft.fft(sig, n=n_fft)
+    
+    # Cross-correlation in frequency domain
+    fft_corr = fft_sig * np.conj(fft_ref)
+    
+    # IFFT to get correlation in time domain
+    corr_full = np.fft.ifft(fft_corr).real
+    corr = corr_full[:n]
+    
+    # Find peak index
+    peak_idx = int(np.argmax(corr))
+    peak = float(corr[peak_idx])
+    
+    return peak_idx, peak, corr
 
 
 def find_peaks(corr: np.ndarray, num_peaks: int = 5, min_distance: int = 100) -> list[tuple[int, float]]:

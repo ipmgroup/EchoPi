@@ -101,6 +101,8 @@ class SonarGUI(QtCore.QObject):
         self.update_rate_hz = float(gui_s.get("update_rate_hz", 2.0))
         # Load system latency from config file (init.json if exists, otherwise default)
         self.system_latency = float(gui_s.get("system_latency_s", settings.get_system_latency()))
+        # Load min_distance from config (used to filter out near reflections)
+        self.min_distance_m = float(gui_s.get("min_distance_m", settings.get_min_distance()))
         
         # Measurement history
         self.history_time = []
@@ -285,6 +287,16 @@ class SonarGUI(QtCore.QObject):
         self.max_distance_spin.valueChanged.connect(self._on_max_distance_changed)
         system_layout.addRow("Max Distance:", self.max_distance_spin)
 
+        self.min_distance_spin = QtWidgets.QDoubleSpinBox()
+        self.min_distance_spin.setRange(0.0, 50.0)
+        self.min_distance_spin.setDecimals(1)
+        self.min_distance_spin.setSingleStep(0.1)
+        self.min_distance_spin.setSuffix(" m")
+        self.min_distance_spin.setValue(self.min_distance_m)
+        self.min_distance_spin.setToolTip("Minimum distance for search window - filters out close reflections")
+        self.min_distance_spin.valueChanged.connect(self._on_min_distance_changed)
+        system_layout.addRow("Min Distance:", self.min_distance_spin)
+
         self.echo_window_label = QtWidgets.QLabel("Echo Window: ---")
         self.echo_window_label.setStyleSheet("font-size: 11px; color: #666;")
         system_layout.addRow("", self.echo_window_label)
@@ -445,6 +457,7 @@ class SonarGUI(QtCore.QObject):
                 amplitude = float(self.amplitude_slider.value()) / 100.0
                 medium = str(self.medium_combo.currentText())
                 max_distance_m = float(self.max_distance_spin.value())
+                min_distance_m = float(self.min_distance_spin.value())
                 system_latency = float(self.latency_spin.value())
                 update_rate = float(self.update_rate_spin.value())
                 filter_size = int(self.filter_spin.value())
@@ -465,6 +478,7 @@ class SonarGUI(QtCore.QObject):
                     medium=medium,
                     system_latency_s=system_latency,
                     reference_fade=0.05,
+                    min_distance_m=min_distance_m,
                     max_distance_m=max_distance_m,
                     filter_size=filter_size
                 )
@@ -800,6 +814,15 @@ class SonarGUI(QtCore.QObject):
             print(f"Warning: failed to save max_distance_m: {e}")
         settings.set_gui_settings({"max_distance_m": value})
         self._refresh_echo_window()
+    
+    def _on_min_distance_changed(self, _value: float):
+        value = float(self.min_distance_spin.value())
+        self.min_distance_m = value
+        try:
+            settings.set_min_distance(value)
+        except Exception as e:
+            print(f"Warning: failed to save min_distance_m: {e}")
+        settings.set_gui_settings({"min_distance_m": value})
     
     def _on_duration_changed(self, duration: float):
         """Validate duration vs update rate when duration changes.

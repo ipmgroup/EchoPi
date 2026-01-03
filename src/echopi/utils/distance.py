@@ -78,6 +78,7 @@ def measure_distance(
     medium: str = "air",
     system_latency_s: float = 0.0,
     reference_fade: float = 0.05,
+    min_distance_m: float | None = None,
     max_distance_m: float | None = None,
     extra_record_seconds: float | None = None,
     enable_smoothing: bool = True,
@@ -92,6 +93,7 @@ def measure_distance(
         medium: Среда распространения ("air" или "water")
         system_latency_s: Известная системная задержка в секундах (TX→RX без акустики)
         reference_fade: Окно для эталона корреляции (0=без окна, >0=Tukey)
+        min_distance_m: Минимальная дистанция (м) для окна поиска пика (None = загрузить из настроек, или 0)
         max_distance_m: Максимальная дистанция (м) для окна поиска пика (None = загрузить из настроек, обычно 5м)
         extra_record_seconds: Дополнительное время записи после конца импульса (сек). None = вычислить из max_distance_m
         enable_smoothing: Включить сглаживание измерений
@@ -103,8 +105,11 @@ def measure_distance(
     Raises:
         ValueError: Если параметры некорректны
     """
-    # Load max_distance_m from settings if not provided
-    # This prevents selecting far echoes (e.g., room walls) as the main target
+    # Load min_distance_m and max_distance_m from settings if not provided
+    # This prevents selecting unwanted echoes (close objects or far walls)
+    if min_distance_m is None:
+        from echopi import settings
+        min_distance_m = settings.get_min_distance()
     if max_distance_m is None:
         from echopi import settings
         max_distance_m = settings.get_max_distance()
@@ -122,8 +127,12 @@ def measure_distance(
         raise ValueError(f"Amplitude must be in [0, 1], got {cfg_chirp.amplitude}")
     if filter_size < 0:
         raise ValueError(f"Filter size must be >= 0, got {filter_size}")
+    if min_distance_m is not None and min_distance_m < 0:
+        raise ValueError(f"min_distance_m must be >= 0, got {min_distance_m}")
     if max_distance_m is not None and max_distance_m <= 0:
         raise ValueError(f"max_distance_m must be > 0, got {max_distance_m}")
+    if min_distance_m is not None and max_distance_m is not None and min_distance_m >= max_distance_m:
+        raise ValueError(f"min_distance_m ({min_distance_m}) must be < max_distance_m ({max_distance_m})")
     if extra_record_seconds is not None and extra_record_seconds < 0:
         raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
     
@@ -171,16 +180,28 @@ def measure_distance(
 
     ref_offset = len(chirp_ref) - 1
 
-    # Define valid lag window: after system latency, and (optionally) before max_distance.
-    # This is critical to avoid selecting far echoes as the "strongest" peak.
-    min_lag_samples = system_latency_s * cfg_audio.sample_rate + 50
-    start_idx = int(ref_offset + max(0, int(min_lag_samples)))
-    if max_distance_m is None:
+    # Define valid lag window: after min_distance (or system latency), before max_distance.
+    # This is critical to avoid selecting unwanted echoes (close objects or far walls).
+    
+    # System latency in samples (not counting guard margin)
+    system_latency_samples = system_latency_s * cfg_audio.sample_rate
+    
+    # Start of search window: system latency + max(guard margin, min_distance round-trip)
+    if min_distance_m is not None and min_distance_m > 0:
+        min_distance_lag = (2.0 * float(min_distance_m) / float(sound_speed)) * cfg_audio.sample_rate
+        start_lag_samples = system_latency_samples + max(50, min_distance_lag)
+    else:
+        start_lag_samples = system_latency_samples + 50  # At least 50 sample guard
+    
+    start_idx = int(ref_offset + int(start_lag_samples))
+    
+    # End of search window: max_distance round-trip time (or end of correlation)
+    if max_distance_m is None or max_distance_m <= 0:
         end_idx = len(corr) - 2
     else:
-        # round-trip max time in samples (+small guard handled by extra_rec already)
         max_lag_samples = (2.0 * float(max_distance_m) / float(sound_speed)) * cfg_audio.sample_rate
         end_idx = int(min(len(corr) - 2, ref_offset + int(max_lag_samples)))
+    
     if end_idx <= start_idx + 2:
         # Fallback if window is invalid
         end_idx = len(corr) - 2
