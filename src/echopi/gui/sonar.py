@@ -222,7 +222,7 @@ class SonarGUI(QtCore.QObject):
         results_layout.addWidget(self.memory_label)
         
         self.error_label = QtWidgets.QLabel("")
-        self.error_label.setStyleSheet("font-size: 11px; color: #f44336; word-wrap: break-word;")
+        self.error_label.setStyleSheet("font-size: 11px; color: #f44336;")
         self.error_label.setWordWrap(True)
         results_layout.addWidget(self.error_label)
         
