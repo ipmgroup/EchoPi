@@ -26,7 +26,7 @@ DEFAULT_SETTINGS = {
     "medium": "air",
     "update_rate_hz": 2.0,
     "filter_size": 3,
-    "sample_rate": 48000,  # INMP441 максимум 50 кГц, по умолчанию 48 кГц
+    "sample_rate": 48000,  # INMP441 maximum 50 kHz, default 48 kHz
     "version": "0.0.1"
 }
 

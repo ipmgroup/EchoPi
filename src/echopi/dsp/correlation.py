@@ -52,21 +52,21 @@ def cross_correlation(ref: np.ndarray, sig: np.ndarray) -> tuple[int, float, np.
 
 
 def find_peaks(corr: np.ndarray, num_peaks: int = 5, min_distance: int = 100) -> list[tuple[int, float]]:
-    """Найти несколько пиков в корреляции.
+    """Find multiple peaks in correlation.
     
     Args:
-        corr: Массив корреляции
-        num_peaks: Количество пиков для поиска
-        min_distance: Минимальное расстояние между пиками
+        corr: Correlation array
+        num_peaks: Number of peaks to find
+        min_distance: Minimum distance between peaks
         
     Returns:
-        Список кортежей (индекс, значение) для каждого пика
+        List of tuples (index, value) for each peak
     """
     peaks = []
     corr_copy = corr.copy()
     
     for _ in range(num_peaks):
-        # Найти максимум
+        # Find maximum
         idx = int(np.argmax(corr_copy))
         value = float(corr_copy[idx])
         
@@ -75,7 +75,7 @@ def find_peaks(corr: np.ndarray, num_peaks: int = 5, min_distance: int = 100) ->
             
         peaks.append((idx, value))
         
-        # Обнулить область вокруг найденного пика
+        # Zero out region around found peak
         start = max(0, idx - min_distance)
         end = min(len(corr_copy), idx + min_distance)
         corr_copy[start:end] = 0

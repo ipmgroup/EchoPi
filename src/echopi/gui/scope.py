@@ -147,7 +147,7 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
 
     # Create stream
     if demo_mode:
-        # Виртуальный поток для демо
+        # Virtual stream for demo
         class DemoStream:
             def __init__(self):
                 self.timer = QtCore.QTimer()
@@ -179,7 +179,7 @@ def run_scope(cfg: AudioDeviceConfig, update_interval_ms: int = 500, demo_mode: 
             # Switch buffers and read ring buffer in correct order
             with buffer_lock:
                 current_buffer[0] = 1 - current_buffer[0]
-                # Читаем из другого буфера
+                # Read from other buffer
                 buf = audio_buffer_b if current_buffer[0] == 0 else audio_buffer_a
                 pos = write_pos[0]
                 

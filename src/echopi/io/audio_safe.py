@@ -1,17 +1,17 @@
 """
-FIX для kernel panic в audio драйвере.
+Fix for kernel panic in audio driver.
 
-ПРОБЛЕМА:
-- Каждый вызов play_and_record() создает новый audio stream
-- При частых вызовах (GUI с 2 Hz) это вызывает:
-  * Быстрое создание/уничтожение DMA буферов
-  * Use-after-free в dma_pool_alloc
+PROBLEM:
+- Each play_and_record() call creates a new audio stream
+- With frequent calls (GUI at 2 Hz) this causes:
+  * Rapid creation/destruction of DMA buffers
+  * Use-after-free in dma_pool_alloc
   * Kernel panic: "deaddeaddeaddead"
 
-РЕШЕНИЕ:
-- Использовать persistent audio stream
-- Переиспользовать один stream для множества измерений
-- Добавить задержки для стабилизации драйвера
+SOLUTION:
+- Use persistent audio stream
+- Reuse one stream for multiple measurements
+- Add delays for driver stabilization
 """
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ from echopi.config import AudioDeviceConfig
 
 
 class PersistentAudioStream:
-    """Persistent audio stream для предотвращения kernel panic.
-    
-    Вместо создания нового stream при каждом измерении,
-    создаем один stream и переиспользуем его.
+    """Persistent audio stream to prevent kernel panic.
+
+    Instead of creating a new stream for each measurement,
+    create one stream and reuse it.
     """
     
     def __init__(self, cfg: AudioDeviceConfig):
@@ -38,11 +38,11 @@ class PersistentAudioStream:
         self._create_stream()
     
     def _create_stream(self):
-        """Создать audio stream с задержкой для стабилизации."""
+        """Create audio stream with delay for stabilization."""
         if self.stream is not None:
             self._close_stream()
         
-        # Задержка перед созданием stream (дает драйверу время)
+        # Delay before creating stream (gives driver time)
         time.sleep(0.05)
         
         self.stream = sd.Stream(
@@ -55,21 +55,21 @@ class PersistentAudioStream:
         )
         self.stream.start()
         
-        # Задержка после создания (дает драйверу время инициализации)
+        # Delay after creation (gives driver initialization time)
         time.sleep(0.05)
 
         # Stream just created; prime on first use to drop stale buffers.
         self._primed = False
     
     def _close_stream(self):
-        """Закрыть stream с задержкой."""
+        """Close stream with delay."""
         if self.stream is not None:
             try:
                 self.stream.stop()
-                # Задержка перед закрытием (дает драйверу время завершить операции)
+                # Delay before closing (gives driver time to finish operations)
                 time.sleep(0.05)
                 self.stream.close()
-                # Задержка после закрытия (дает драйверу время освободить ресурсы)
+                # Delay after closing (gives driver time to free resources)
                 time.sleep(0.05)
             except Exception as e:
                 print(f"Warning: Error closing stream: {e}")
@@ -82,20 +82,20 @@ class PersistentAudioStream:
         extra_record_seconds: float = 0.1,
         return_tx_index: bool = True
     ) -> tuple[np.ndarray, int] | np.ndarray:
-        """Воспроизведение и запись с использованием persistent stream.
+        """Playback and recording using persistent stream.
 
-        Встроенный pacing (rate-limit) предотвращает слишком частые вызовы,
-        которые могут перегружать аудио-драйвер при экстремальных настройках.
-        
+        Built-in pacing (rate-limit) prevents too frequent calls,
+        which can overload audio driver under extreme settings.
+
         Args:
-            play_signal: Сигнал для воспроизведения (TX chirp)
-            extra_record_seconds: Дополнительное время записи после TX
-            return_tx_index: Если True, возвращать (recorded, tx_sample_index)
-        
+            play_signal: Signal for playback (TX chirp)
+            extra_record_seconds: Additional recording time after TX
+            return_tx_index: If True, return (recorded, tx_sample_index)
+
         Returns:
-            Если return_tx_index=True: (recorded, tx_sample_index)
-                где tx_sample_index - индекс начала TX chirp в recorded
-            Если return_tx_index=False: только recorded (для обратной совместимости)
+            If return_tx_index=True: (recorded, tx_sample_index)
+                where tx_sample_index - index of TX chirp start in recorded
+            If return_tx_index=False: only recorded (for backward compatibility)
         """
         if self.stream is None:
             self._create_stream()
@@ -131,10 +131,10 @@ class PersistentAudioStream:
         cooldown_s = 0.020
         start_t = time.monotonic()
         
-        # TX time anchor: индекс начала chirp в recorded.
-        # Для simplex системы (play/record одновременно) TX начинается с первого блока.
-        # Учитываем задержку priming - после priming первый write начинает TX.
-        tx_sample_index = 0  # TX chirp начинается с индекса 0 в recorded
+        # TX time anchor: index of chirp start in recorded.
+        # For simplex system (play/record simultaneously) TX starts from first block.
+        # Account for priming delay - after priming first write starts TX.
+        tx_sample_index = 0  # TX chirp starts at index 0 in recorded
         
         try:
             idx = 0
@@ -166,12 +166,12 @@ class PersistentAudioStream:
             
         except Exception as e:
             print(f"Error in play_and_record: {e}")
-            # Пересоздать stream при ошибке
+            # Recreate stream on error
             self._create_stream()
             raise
     
     def close(self):
-        """Закрыть stream."""
+        """Close stream."""
         self._close_stream()
     
     def __enter__(self):
@@ -181,12 +181,12 @@ class PersistentAudioStream:
         self.close()
 
 
-# Глобальный persistent stream (опционально)
+# Global persistent stream (optional)
 _global_stream = None
 
 
 def get_global_stream(cfg: AudioDeviceConfig) -> PersistentAudioStream:
-    """Получить глобальный persistent stream (создается один раз)."""
+    """Get global persistent stream (created once)."""
     global _global_stream
     if _global_stream is None:
         _global_stream = PersistentAudioStream(cfg)
@@ -194,7 +194,7 @@ def get_global_stream(cfg: AudioDeviceConfig) -> PersistentAudioStream:
 
 
 def close_global_stream():
-    """Закрыть глобальный stream."""
+    """Close global stream."""
     global _global_stream
     if _global_stream is not None:
         _global_stream.close()
@@ -211,19 +211,19 @@ def play_and_record_safe(
     use_global: bool = True,
     return_tx_index: bool = True
 ) -> tuple[np.ndarray, int] | np.ndarray:
-    """Безопасная версия play_and_record с persistent stream.
-    
+    """Safe version of play_and_record with persistent stream.
+
     Args:
-        play_signal: Сигнал для воспроизведения (TX chirp)
-        cfg: Конфигурация audio
-        extra_record_seconds: Дополнительное время записи
-        use_global: Использовать глобальный stream (рекомендуется для GUI)
-        return_tx_index: Если True, возвращать (recorded, tx_sample_index)
-    
+        play_signal: Signal for playback (TX chirp)
+        cfg: Audio configuration
+        extra_record_seconds: Additional recording time
+        use_global: Use global stream (recommended for GUI)
+        return_tx_index: If True, return (recorded, tx_sample_index)
+
     Returns:
-        Если return_tx_index=True: (recorded, tx_sample_index)
-            где tx_sample_index - индекс начала TX chirp в recorded
-        Если return_tx_index=False: только recorded (для обратной совместимости)
+        If return_tx_index=True: (recorded, tx_sample_index)
+            where tx_sample_index - index of TX chirp start in recorded
+        If return_tx_index=False: only recorded (for backward compatibility)
     """
     if use_global:
         stream = get_global_stream(cfg)

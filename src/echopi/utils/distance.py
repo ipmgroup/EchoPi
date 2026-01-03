@@ -10,17 +10,17 @@ from echopi.dsp.correlation import cross_correlation, parabolic_interpolate, fin
 from echopi.io.audio_safe import get_global_stream
 
 
-# Скорость звука (м/с)
+# Speed of sound (m/s)
 SPEED_OF_SOUND = {
-    "air": 343.0,      # 20°C, сухой воздух
-    "water": 1480.0,   # пресная вода, 20°C
+    "air": 343.0,      # 20°C, dry air
+    "water": 1480.0,   # fresh water, 20°C
 }
 
 
 # Global smoothing buffer for distance measurements
 _distance_smoothing_buffer = deque(maxlen=3)
 
-# Кэш для сгенерированных чирпов (для стабильности амплитуды)
+# Cache for generated chirps (for amplitude stability)
 _chirp_cache: dict[tuple, np.ndarray] = {}
 
 
@@ -96,26 +96,26 @@ def measure_distance(
     normalize_recorded: bool = False,
 ) -> dict:
     """
-    Измерение расстояния до цели с использованием чирп-сигнала.
+    Measure distance to target using chirp signal.
     
     Args:
-        cfg_audio: Конфигурация аудио устройства
-        cfg_chirp: Конфигурация чирп-сигнала (для излучения)
-        medium: Среда распространения ("air" или "water")
-        system_latency_s: Известная системная задержка в секундах (TX→RX без акустики)
-        reference_fade: Окно для эталона корреляции (0=без окна, >0=Tukey)
-        min_distance_m: Минимальная дистанция (м) для окна поиска пика (None = загрузить из настроек, или 0)
-        max_distance_m: Максимальная дистанция (м) для окна поиска пика (None = загрузить из настроек, обычно 5м)
-        extra_record_seconds: Дополнительное время записи после конца импульса (сек). None = вычислить из max_distance_m
-        enable_smoothing: Включить сглаживание измерений
-        filter_size: Размер фильтра сглаживания (1=без фильтра, 3=умеренный, 5+=сильный)
-        normalize_recorded: Нормализовать записанный сигнал перед корреляцией (False = сохранить информацию об SNR)
+        cfg_audio: Audio device configuration
+        cfg_chirp: Chirp signal configuration (for transmission)
+        medium: Propagation medium ("air" or "water")
+        system_latency_s: Known system latency in seconds (TX→RX without acoustics)
+        reference_fade: Window for correlation reference (0=no window, >0=Tukey)
+        min_distance_m: Minimum distance (m) for peak search window (None = load from settings, or 0)
+        max_distance_m: Maximum distance (m) for peak search window (None = load from settings, typically 5m)
+        extra_record_seconds: Additional recording time after pulse end (s). None = compute from max_distance_m
+        enable_smoothing: Enable measurement smoothing
+        filter_size: Smoothing filter size (1=no filter, 3=moderate, 5+=heavy)
+        normalize_recorded: Normalize recorded signal before correlation (False = preserve SNR information)
     
     Returns:
-        dict с результатами измерения
+        dict with measurement results
         
     Raises:
-        ValueError: Если параметры некорректны
+        ValueError: If parameters are invalid
     """
     # Load min_distance_m and max_distance_m from settings if not provided
     # This prevents selecting unwanted echoes (close objects or far walls)
@@ -148,39 +148,39 @@ def measure_distance(
     if extra_record_seconds is not None and extra_record_seconds < 0:
         raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
     
-    # Генерация излучаемого чирпа БЕЗ окна (максимальная энергия)
-    # Используем кэш для стабильности амплитуды (предотвращает скачки громкости)
+    # Generate transmitted chirp WITHOUT window (maximum energy)
+    # Use cache for amplitude stability (prevents volume jumps)
     cfg_tx = ChirpConfig(
         start_freq=cfg_chirp.start_freq,
         end_freq=cfg_chirp.end_freq,
         duration=cfg_chirp.duration,
         amplitude=cfg_chirp.amplitude,
-        fade_fraction=0.0,  # БЕЗ окна при излучении
+        fade_fraction=0.0,  # NO window for transmission
     )
     
-    # Ключ для кэша: параметры чирпа + sample_rate + amplitude
+    # Cache key: chirp parameters + sample_rate + amplitude
     cache_key = (
         cfg_tx.start_freq,
         cfg_tx.end_freq,
         cfg_tx.duration,
         cfg_tx.fade_fraction,
         cfg_audio.sample_rate,
-        cfg_chirp.amplitude,  # Включаем amplitude в ключ, т.к. нормализация зависит от него
+        cfg_chirp.amplitude,  # Include amplitude in key, as normalization depends on it
     )
     
     if cache_key in _chirp_cache:
-        # Используем кэшированный чирп для стабильности
+        # Use cached chirp for stability
         chirp_tx = _chirp_cache[cache_key].copy()
     else:
-        # Генерируем новый чирп и кэшируем его
+        # Generate new chirp and cache it
         chirp_tx = generate_chirp(cfg_tx, sample_rate=cfg_audio.sample_rate)
         chirp_tx = normalize(chirp_tx, peak=cfg_chirp.amplitude)
-        # Сохраняем в кэш (копия для безопасности)
+        # Save to cache (copy for safety)
         _chirp_cache[cache_key] = chirp_tx.copy()
     
-    # Формирование эталона ВСЕГДА С ОКНОМ для корреляции (уменьшаем боковые лепестки)
-    # Окно всегда используется на приеме для лучшего подавления шумов.
-    # Даже если пользователь просит 0, принудительно держим минимум 5%.
+    # Form reference ALWAYS WITH WINDOW for correlation (reduces sidelobes)
+    # Window is always used on receive for better noise suppression.
+    # Even if user requests 0, we enforce minimum 5%.
     if reference_fade <= 0.0 or reference_fade < 0.05:
         reference_fade = 0.05
     
@@ -189,12 +189,12 @@ def measure_distance(
         end_freq=cfg_chirp.end_freq,
         duration=cfg_chirp.duration,
         amplitude=cfg_chirp.amplitude,
-        fade_fraction=reference_fade,  # ВСЕГДА с окном для эталона
+        fade_fraction=reference_fade,  # ALWAYS with window for reference
     )
     chirp_ref = generate_chirp(cfg_ref, sample_rate=cfg_audio.sample_rate)
-    chirp_ref = normalize(chirp_ref, peak=1.0)  # Нормализуем эталон
+    chirp_ref = normalize(chirp_ref, peak=1.0)  # Normalize reference
     
-    # Излучение и запись
+    # Transmission and recording
     sound_speed = SPEED_OF_SOUND.get(medium, SPEED_OF_SOUND["air"])
     extra_rec = compute_extra_record_seconds(
         medium=medium,
@@ -204,54 +204,54 @@ def measure_distance(
         guard_seconds=0.005,
     )
 
-    # Проверка амплитуды излучаемого сигнала (для диагностики скачков громкости)
+    # Check transmitted signal amplitude (for volume jump diagnostics)
     tx_max = np.max(np.abs(chirp_tx))
     tx_rms = np.sqrt(np.mean(chirp_tx**2))
     
     # Use global persistent stream for stable repeated measurements
     stream = get_global_stream(cfg_audio)
-    # Получаем TX time anchor для точной корреляции
+    # Get TX time anchor for accurate correlation
     recorded, tx_sample_index = stream.play_and_record(chirp_tx, extra_record_seconds=extra_rec)
     
-    # Проверка на клиппинг записанного сигнала
+    # Check for recorded signal clipping
     recorded_max = np.max(np.abs(recorded))
     if recorded_max >= 0.99:
-        # Сигнал клипирован - это может исказить корреляцию
-        # В этом случае нормализация может помочь, но лучше уменьшить amplitude
-        pass  # Можно добавить предупреждение или автоматическую нормализацию
+        # Signal is clipped - this may distort correlation
+        # Normalization may help in this case, but better to reduce amplitude
+        pass  # Could add warning or automatic normalization
     
-    # Опциональная нормализация записанного сигнала для matched filter
-    # Нормализация помогает:
-    # 1. Устранить влияние амплитуды на результат корреляции
-    # 2. Улучшить стабильность детектирования при изменении громкости
-    # 3. Упростить установку порога детектирования
+    # Optional normalization of recorded signal for matched filter
+    # Normalization helps:
+    # 1. Eliminate amplitude influence on correlation result
+    # 2. Improve detection stability when volume changes
+    # 3. Simplify detection threshold setting
     # 
-    # НО: нормализация скрывает информацию об амплитуде сигнала (SNR)
-    # Поэтому по умолчанию не нормализуем, чтобы сохранить информацию об SNR
-    # Используйте normalize_recorded=True если:
-    # - Есть проблемы с нестабильностью амплитуды
-    # - Нужна более стабильная детекция независимо от громкости
-    # - Сигнал не клипирован (recorded_max < 0.99)
+    # BUT: normalization hides signal amplitude information (SNR)
+    # Therefore by default we don't normalize to preserve SNR information
+    # Use normalize_recorded=True if:
+    # - There are amplitude instability issues
+    # - Need more stable detection regardless of volume
+    # - Signal is not clipped (recorded_max < 0.99)
     
     if normalize_recorded and recorded_max > 0.01 and recorded_max < 0.99:
-        # Нормализация по энергии (unit norm) - более стабильна для matched filter
-        # Это устраняет влияние амплитуды на результат корреляции
+        # Energy normalization (unit norm) - more stable for matched filter
+        # This eliminates amplitude influence on correlation result
         recorded_energy = np.sqrt(np.sum(recorded**2))
-        if recorded_energy > 1e-10:  # Защита от деления на ноль
+        if recorded_energy > 1e-10:  # Protection against division by zero
             recorded = recorded / recorded_energy
     
-    # Корреляция с эталоном (matched filter: используем реверсированный чирп)
-    # Для matched filter нужно использовать реверсированный эталон
+    # Correlation with reference (matched filter: use reversed chirp)
+    # For matched filter we need to use reversed reference
     #
-    # ВАЖНО: TX time anchor (tx_sample_index) фиксирует момент начала TX chirp
-    # в записанном сигнале. Для simplex систем (play/record одновременно)
-    # tx_sample_index=0, т.е. TX chirp начинается с recorded[0].
-    # Это критично для точного расчета задержки эха и расстояния.
+    # IMPORTANT: TX time anchor (tx_sample_index) fixes the moment of TX chirp start
+    # in the recorded signal. For simplex systems (play/record simultaneously)
+    # tx_sample_index=0, i.e. TX chirp starts at recorded[0].
+    # This is critical for accurate echo delay and distance calculation.
     #
-    # В корреляции:
-    # - lag = 0 означает, что эхо пришло в момент tx_sample_index
-    # - lag > 0 означает задержку эха относительно TX
-    # - Из lag можно вычислить расстояние: distance = (lag * sound_speed) / (2 * sample_rate)
+    # In correlation:
+    # - lag = 0 means echo arrived at tx_sample_index moment
+    # - lag > 0 means echo delay relative to TX
+    # - From lag we can compute distance: distance = (lag * sound_speed) / (2 * sample_rate)
     chirp_ref_reversed = chirp_ref[::-1]
     lag_samples, peak, corr = cross_correlation(chirp_ref_reversed, recorded)
 
@@ -291,45 +291,45 @@ def measure_distance(
     peaks = find_peaks(corr_window, num_peaks=15, min_distance=50)
     
     if len(peaks) > 0:
-        # Фильтрация слабых пиков (только пики > 30% от максимального)
+        # Filter weak peaks (only peaks > 30% of maximum)
         max_peak_value = peaks[0][1]
         strong_peaks = [(idx, val) for idx, val in peaks if val > max_peak_value * 0.3]
         
         if len(strong_peaks) > 0:
-            # Если есть несколько сильных пиков, выбираем самый сильный
-            # Но если разница между топ-2 пиками < 20%, это может быть проблемой
+            # If there are multiple strong peaks, choose the strongest
+            # But if difference between top-2 peaks < 20%, this may be a problem
             if len(strong_peaks) > 1:
                 top2_diff = (strong_peaks[0][1] - strong_peaks[1][1]) / strong_peaks[0][1]
                 if top2_diff < 0.2:
-                    # Два пика близки по амплитуде - возможна нестабильность
-                    # Выбираем более ранний (ближе к началу окна) для стабильности
-                    # Это предпочтительнее, так как дальние отражения обычно слабее
+                    # Two peaks close in amplitude - possible instability
+                    # Choose earlier one (closer to window start) for stability
+                    # This is preferable as distant reflections are usually weaker
                     best_peak_relative_idx, best_peak_value = min(strong_peaks[:2], key=lambda p: p[0])
                 else:
-                    # Один пик явно сильнее - используем его
+                    # One peak is clearly stronger - use it
                     best_peak_relative_idx, best_peak_value = strong_peaks[0]
             else:
                 best_peak_relative_idx, best_peak_value = strong_peaks[0]
             
             best_peak_idx = start_idx + best_peak_relative_idx
         else:
-            # Нет сильных пиков - используем максимальный
+            # No strong peaks - use maximum
             best_peak_relative_idx, best_peak_value = peaks[0]
             best_peak_idx = start_idx + best_peak_relative_idx
     else:
         # Fallback: use maximum value in window
         best_peak_idx = int(start_idx + np.argmax(corr_window))
     
-    # Финальная интерполяция выбранного пика
+    # Final interpolation of selected peak
     refined_idx, refined_peak = parabolic_interpolate(corr, best_peak_idx)
     refined_lag = refined_idx - ref_offset
     lag_samples = best_peak_idx - ref_offset
     
-    # Время распространения (вычитаем системную задержку)
+    # Propagation time (subtract system latency)
     total_time_s = refined_lag / cfg_audio.sample_rate
     time_of_flight_s = total_time_s - system_latency_s
     
-    # Расстояние: R = (c × t) / 2  (делим на 2, т.к. туда и обратно)
+    # Distance: R = (c × t) / 2  (divide by 2, as it's round trip)
     distance_m = (sound_speed * time_of_flight_s) / 2.0
     
     # Apply smoothing if enabled and filter_size > 1 (0 or 1 = no filtering)
@@ -361,7 +361,7 @@ def measure_distance(
         "system_latency_s": float(system_latency_s),
         "extra_record_seconds": float(extra_rec),
         "max_distance_m": None if max_distance_m is None else float(max_distance_m),
-        # Диагностика амплитуды (для выявления скачков громкости)
+        # Amplitude diagnostics (for volume jump detection)
         "tx_max": float(tx_max),
         "tx_rms": float(tx_rms),
         "recorded_max": float(recorded_max),

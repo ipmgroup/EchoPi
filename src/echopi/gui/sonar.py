@@ -407,14 +407,14 @@ class SonarGUI(QtCore.QObject):
         print("Initializing audio stream...")
         try:
             stream = audio.get_global_stream(self.cfg)
-            # Агрессивный warmup: несколько dummy измерений для стабилизации voiceHAT
-            # Это решает проблему плавающей амплитуды и прыгающих измерений по времени
+            # Aggressive warmup: several dummy measurements for voiceHAT stabilization
+            # This solves floating amplitude and time-jumping measurements
             import time
             dummy_signal = np.zeros(int(self.cfg.sample_rate * 0.001), dtype=np.float32)
             print("  Warming up audio hardware (this may take a few seconds)...")
-            for i in range(10):  # 10 warmup циклов для полной стабилизации
+            for i in range(10):  # 10 warmup cycles for full stabilization
                 stream.play_and_record(dummy_signal, extra_record_seconds=0.01, return_tx_index=False)
-                time.sleep(0.05)  # 50ms пауза между warmup циклами
+                time.sleep(0.05)  # 50ms pause between warmup cycles
             print("✓ Audio stream initialized and stabilized")
         except Exception as e:
             print(f"Warning: Failed to initialize audio stream: {e}")

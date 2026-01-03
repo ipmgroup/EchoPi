@@ -337,9 +337,9 @@ def cmd_distance(args: argparse.Namespace):
     print()
     print("="*60)
     distance = result.get('smoothed_distance_m', result['distance_m'])
-    print(f"До препятствия {distance:.2f} м ({distance*100:.0f} см)")
+    print(f"Distance to obstacle: {distance:.2f} m ({distance*100:.0f} cm)")
     if 'smoothed_distance_m' in result and args.filter > 1:
-        print(f"(raw: {result['distance_m']:.2f} м, filter: {args.filter})")
+        print(f"(raw: {result['distance_m']:.2f} m, filter: {args.filter})")
     print("="*60)
 
 

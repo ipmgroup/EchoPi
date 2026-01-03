@@ -7,7 +7,7 @@ from echopi.config import ChirpConfig
 
 
 def generate_chirp(cfg: ChirpConfig, sample_rate: int | None = None) -> np.ndarray:
-    sr = sample_rate or 48000  # INMP441 максимум 50 кГц, по умолчанию 48 кГц
+    sr = sample_rate or 48000  # INMP441 maximum 50 kHz, default 48 kHz
     t = np.linspace(0.0, cfg.duration, int(sr * cfg.duration), endpoint=False)
     sweep = scipy.signal.chirp(t, f0=cfg.start_freq, f1=cfg.end_freq, t1=cfg.duration, method="linear")
     if cfg.fade_fraction > 0:
@@ -22,33 +22,33 @@ def generate_chirp(cfg: ChirpConfig, sample_rate: int | None = None) -> np.ndarr
 
 
 def normalize(signal: np.ndarray, peak: float = 0.9) -> np.ndarray:
-    """Нормализация сигнала до заданной пиковой амплитуды.
+    """Normalize signal to specified peak amplitude.
     
     Args:
-        signal: Входной сигнал
-        peak: Целевая пиковая амплитуда (0.0-1.0)
+        signal: Input signal
+        peak: Target peak amplitude (0.0-1.0)
     
     Returns:
-        Нормализованный сигнал с пиковой амплитудой peak
+        Normalized signal with peak amplitude
     """
     signal = np.asarray(signal, dtype=np.float32)
     
-    # Найти максимальное абсолютное значение
+    # Find maximum absolute value
     max_val = np.max(np.abs(signal))
     
-    # Защита от деления на ноль или очень маленькие числа
-    # Если сигнал слишком мал, возвращаем нулевой сигнал
+    # Protection against division by zero or very small numbers
+    # If signal is too small, return zero signal
     if max_val < 1e-10:
         return np.zeros_like(signal, dtype=np.float32)
     
-    # Нормализация с защитой от численных ошибок
-    # Используем более стабильный метод для избежания скачков амплитуды
+    # Normalization with protection against numerical errors
+    # Use more stable method to avoid amplitude jumps
     normalized = (signal / max_val * peak).astype(np.float32)
     
-    # Проверка результата (защита от переполнения)
+    # Check result (protection against overflow)
     actual_max = np.max(np.abs(normalized))
-    if actual_max > peak * 1.01:  # Допускаем 1% отклонение из-за численных ошибок
-        # Пересчитываем с более точной нормализацией
+    if actual_max > peak * 1.01:  # Allow 1% deviation due to numerical errors
+        # Recalculate with more precise normalization
         normalized = (signal / max_val * peak).astype(np.float32)
     
     return normalized

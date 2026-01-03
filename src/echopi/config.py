@@ -13,7 +13,7 @@ class AudioDeviceConfig:
     sample_rate: int = 48000
     channels_play: int = 1
     channels_rec: int = 1
-    frames_per_buffer: int = 2048  # Рекомендуется 256 для низкой задержки (см. README 5.3), но 2048 безопаснее (меньше XRUN)
+    frames_per_buffer: int = 2048  # Recommended 256 for low latency (see README 5.3), but 2048 is safer (fewer XRUN)
     latency: str | float | None = None  # "low", "high", float seconds or None
 
     @classmethod
@@ -43,4 +43,4 @@ class ChirpConfig:
     end_freq: float = 20000.0
     duration: float = 0.05
     amplitude: float = 0.8
-    fade_fraction: float = 0.0  # 0 = без окна (максимальная энергия), >0 = с окном Tukey
+    fade_fraction: float = 0.0  # 0 = no window (maximum energy), >0 = with Tukey window

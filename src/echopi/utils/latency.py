@@ -98,7 +98,7 @@ def measure_latency(
         _ = stream.play_and_record(
             np.zeros(cfg_audio.frames_per_buffer, dtype=np.float32),
             extra_record_seconds=0.0,
-            return_tx_index=False,  # Не нужен TX index для warmup
+            return_tx_index=False,  # TX index not needed for warmup
         )
     except Exception:
         pass
@@ -116,7 +116,7 @@ def measure_latency(
 
     for i in range(repeats):
         t0 = time.monotonic()
-        # Для калибровки латентности используем старый API (только recorded)
+        # For latency calibration use old API (only recorded)
         recorded = stream.play_and_record(chirp, extra_record_seconds=extra_record_seconds, return_tx_index=False)
         (
             latency_s,
