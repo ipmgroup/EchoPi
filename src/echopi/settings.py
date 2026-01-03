@@ -47,6 +47,7 @@ def get_gui_settings() -> dict[str, Any]:
         "medium": s.get("medium", DEFAULT_SETTINGS["medium"]),
         "update_rate_hz": s.get("update_rate_hz", DEFAULT_SETTINGS["update_rate_hz"]),
         "filter_size": s.get("filter_size", DEFAULT_SETTINGS["filter_size"]),
+        "normalize_recorded": s.get("normalize_recorded", False),
         "min_distance_m": s.get("min_distance_m", DEFAULT_SETTINGS["min_distance_m"]),
         "max_distance_m": s.get("max_distance_m", DEFAULT_SETTINGS["max_distance_m"]),
         "system_latency_s": s.get("system_latency_s", DEFAULT_SETTINGS["system_latency_s"]),
@@ -63,6 +64,7 @@ def set_gui_settings(values: dict[str, Any]) -> bool:
         "medium",
         "update_rate_hz",
         "filter_size",
+        "normalize_recorded",
         "max_distance_m",
         "system_latency_s",
     }

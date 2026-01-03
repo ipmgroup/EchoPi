@@ -99,6 +99,7 @@ class SonarGUI(QtCore.QObject):
                 print(f"Warning: failed to persist max_distance_m: {e}")
 
         self.filter_size = int(gui_s.get("filter_size", 3))
+        self.normalize_recorded = bool(gui_s.get("normalize_recorded", False))
         self.update_rate_hz = float(gui_s.get("update_rate_hz", 2.0))
         # Load system latency from config file (init.json if exists, otherwise default)
         self.system_latency = float(gui_s.get("system_latency_s", settings.get_system_latency()))
@@ -372,6 +373,16 @@ class SonarGUI(QtCore.QObject):
         self.filter_spin.valueChanged.connect(self._on_filter_changed)
         system_layout.addRow("Filter Size:", self.filter_spin)
         
+        self.normalize_checkbox = QtWidgets.QCheckBox("Normalize Recorded Signal")
+        self.normalize_checkbox.setChecked(self.normalize_recorded)
+        self.normalize_checkbox.setToolTip(
+            "Normalize input signal before correlation.\n"
+            "Helps with amplitude instability but hides SNR information.\n"
+            "See NORMALIZATION_GUIDE.md for details."
+        )
+        self.normalize_checkbox.stateChanged.connect(self._on_normalize_changed)
+        system_layout.addRow("", self.normalize_checkbox)
+        
         control_layout.addWidget(system_group)
         
         # Control buttons
@@ -496,6 +507,7 @@ class SonarGUI(QtCore.QObject):
                 system_latency = float(self.latency_spin.value())
                 update_rate = float(self.update_rate_spin.value())
                 filter_size = int(self.filter_spin.value())
+                normalize_recorded = bool(self.normalize_checkbox.isChecked())
                 
                 # Create chirp configuration
                 chirp_cfg = ChirpConfig(
@@ -515,7 +527,8 @@ class SonarGUI(QtCore.QObject):
                     reference_fade=0.05,
                     min_distance_m=min_distance_m,
                     max_distance_m=max_distance_m,
-                    filter_size=filter_size
+                    filter_size=filter_size,
+                    normalize_recorded=normalize_recorded
                 )
                 
                 measurement_count += 1
@@ -823,6 +836,13 @@ class SonarGUI(QtCore.QObject):
             print("✓ Filter: no smoothing (raw values)")
         else:
             print("✓ Filter: OFF")
+    
+    def _on_normalize_changed(self, state: int):
+        """Handle normalize checkbox change."""
+        self.normalize_recorded = (state == QtCore.Qt.CheckState.Checked.value)
+        settings.set_gui_settings({"normalize_recorded": self.normalize_recorded})
+        status = "enabled" if self.normalize_recorded else "disabled"
+        print(f"✓ Normalize recorded signal: {status}")
 
 
     def _refresh_echo_window(self):

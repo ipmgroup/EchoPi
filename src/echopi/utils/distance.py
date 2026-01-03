@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from collections import deque
+from functools import lru_cache
 
 from echopi.config import AudioDeviceConfig, ChirpConfig
 from echopi.dsp.chirp import generate_chirp, normalize
@@ -18,6 +19,9 @@ SPEED_OF_SOUND = {
 
 # Global smoothing buffer for distance measurements
 _distance_smoothing_buffer = deque(maxlen=3)
+
+# Кэш для сгенерированных чирпов (для стабильности амплитуды)
+_chirp_cache: dict[tuple, np.ndarray] = {}
 
 
 def compute_extra_record_seconds(
@@ -72,6 +76,12 @@ def clear_distance_smoothing():
     _distance_smoothing_buffer.clear()
 
 
+def clear_chirp_cache():
+    """Clear chirp cache (call when parameters change significantly)."""
+    global _chirp_cache
+    _chirp_cache.clear()
+
+
 def measure_distance(
     cfg_audio: AudioDeviceConfig,
     cfg_chirp: ChirpConfig,
@@ -83,6 +93,7 @@ def measure_distance(
     extra_record_seconds: float | None = None,
     enable_smoothing: bool = True,
     filter_size: int = 3,
+    normalize_recorded: bool = False,
 ) -> dict:
     """
     Измерение расстояния до цели с использованием чирп-сигнала.
@@ -98,6 +109,7 @@ def measure_distance(
         extra_record_seconds: Дополнительное время записи после конца импульса (сек). None = вычислить из max_distance_m
         enable_smoothing: Включить сглаживание измерений
         filter_size: Размер фильтра сглаживания (1=без фильтра, 3=умеренный, 5+=сильный)
+        normalize_recorded: Нормализовать записанный сигнал перед корреляцией (False = сохранить информацию об SNR)
     
     Returns:
         dict с результатами измерения
@@ -137,6 +149,7 @@ def measure_distance(
         raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
     
     # Генерация излучаемого чирпа БЕЗ окна (максимальная энергия)
+    # Используем кэш для стабильности амплитуды (предотвращает скачки громкости)
     cfg_tx = ChirpConfig(
         start_freq=cfg_chirp.start_freq,
         end_freq=cfg_chirp.end_freq,
@@ -144,8 +157,26 @@ def measure_distance(
         amplitude=cfg_chirp.amplitude,
         fade_fraction=0.0,  # БЕЗ окна при излучении
     )
-    chirp_tx = generate_chirp(cfg_tx, sample_rate=cfg_audio.sample_rate)
-    chirp_tx = normalize(chirp_tx, peak=cfg_chirp.amplitude)
+    
+    # Ключ для кэша: параметры чирпа + sample_rate + amplitude
+    cache_key = (
+        cfg_tx.start_freq,
+        cfg_tx.end_freq,
+        cfg_tx.duration,
+        cfg_tx.fade_fraction,
+        cfg_audio.sample_rate,
+        cfg_chirp.amplitude,  # Включаем amplitude в ключ, т.к. нормализация зависит от него
+    )
+    
+    if cache_key in _chirp_cache:
+        # Используем кэшированный чирп для стабильности
+        chirp_tx = _chirp_cache[cache_key].copy()
+    else:
+        # Генерируем новый чирп и кэшируем его
+        chirp_tx = generate_chirp(cfg_tx, sample_rate=cfg_audio.sample_rate)
+        chirp_tx = normalize(chirp_tx, peak=cfg_chirp.amplitude)
+        # Сохраняем в кэш (копия для безопасности)
+        _chirp_cache[cache_key] = chirp_tx.copy()
     
     # Формирование эталона ВСЕГДА С ОКНОМ для корреляции (уменьшаем боковые лепестки)
     # Окно всегда используется на приеме для лучшего подавления шумов.
@@ -173,12 +204,45 @@ def measure_distance(
         guard_seconds=0.005,
     )
 
+    # Проверка амплитуды излучаемого сигнала (для диагностики скачков громкости)
+    tx_max = np.max(np.abs(chirp_tx))
+    tx_rms = np.sqrt(np.mean(chirp_tx**2))
+    
     # Use global persistent stream for stable repeated measurements
     stream = get_global_stream(cfg_audio)
     recorded = stream.play_and_record(chirp_tx, extra_record_seconds=extra_rec)
     
-    # Корреляция с эталоном (с окном)
-    lag_samples, peak, corr = cross_correlation(chirp_ref, recorded)
+    # Проверка на клиппинг записанного сигнала
+    recorded_max = np.max(np.abs(recorded))
+    if recorded_max >= 0.99:
+        # Сигнал клипирован - это может исказить корреляцию
+        # В этом случае нормализация может помочь, но лучше уменьшить amplitude
+        pass  # Можно добавить предупреждение или автоматическую нормализацию
+    
+    # Опциональная нормализация записанного сигнала для matched filter
+    # Нормализация помогает:
+    # 1. Устранить влияние амплитуды на результат корреляции
+    # 2. Улучшить стабильность детектирования при изменении громкости
+    # 3. Упростить установку порога детектирования
+    # 
+    # НО: нормализация скрывает информацию об амплитуде сигнала (SNR)
+    # Поэтому по умолчанию не нормализуем, чтобы сохранить информацию об SNR
+    # Используйте normalize_recorded=True если:
+    # - Есть проблемы с нестабильностью амплитуды
+    # - Нужна более стабильная детекция независимо от громкости
+    # - Сигнал не клипирован (recorded_max < 0.99)
+    
+    if normalize_recorded and recorded_max > 0.01 and recorded_max < 0.99:
+        # Нормализация по энергии (unit norm) - более стабильна для matched filter
+        # Это устраняет влияние амплитуды на результат корреляции
+        recorded_energy = np.sqrt(np.sum(recorded**2))
+        if recorded_energy > 1e-10:  # Защита от деления на ноль
+            recorded = recorded / recorded_energy
+    
+    # Корреляция с эталоном (matched filter: используем реверсированный чирп)
+    # Для matched filter нужно использовать реверсированный эталон
+    chirp_ref_reversed = chirp_ref[::-1]
+    lag_samples, peak, corr = cross_correlation(chirp_ref_reversed, recorded)
 
     ref_offset = len(chirp_ref) - 1
 
@@ -216,11 +280,31 @@ def measure_distance(
     peaks = find_peaks(corr_window, num_peaks=15, min_distance=50)
     
     if len(peaks) > 0:
-        # Take the STRONGEST peak from the window (peaks are sorted by amplitude descending)
-        # This is the actual target reflection
-        # Original logic from first commit: strongest peak in valid window
-        best_peak_relative_idx, best_peak_value = peaks[0]
-        best_peak_idx = start_idx + best_peak_relative_idx
+        # Фильтрация слабых пиков (только пики > 30% от максимального)
+        max_peak_value = peaks[0][1]
+        strong_peaks = [(idx, val) for idx, val in peaks if val > max_peak_value * 0.3]
+        
+        if len(strong_peaks) > 0:
+            # Если есть несколько сильных пиков, выбираем самый сильный
+            # Но если разница между топ-2 пиками < 20%, это может быть проблемой
+            if len(strong_peaks) > 1:
+                top2_diff = (strong_peaks[0][1] - strong_peaks[1][1]) / strong_peaks[0][1]
+                if top2_diff < 0.2:
+                    # Два пика близки по амплитуде - возможна нестабильность
+                    # Выбираем более ранний (ближе к началу окна) для стабильности
+                    # Это предпочтительнее, так как дальние отражения обычно слабее
+                    best_peak_relative_idx, best_peak_value = min(strong_peaks[:2], key=lambda p: p[0])
+                else:
+                    # Один пик явно сильнее - используем его
+                    best_peak_relative_idx, best_peak_value = strong_peaks[0]
+            else:
+                best_peak_relative_idx, best_peak_value = strong_peaks[0]
+            
+            best_peak_idx = start_idx + best_peak_relative_idx
+        else:
+            # Нет сильных пиков - используем максимальный
+            best_peak_relative_idx, best_peak_value = peaks[0]
+            best_peak_idx = start_idx + best_peak_relative_idx
     else:
         # Fallback: use maximum value in window
         best_peak_idx = int(start_idx + np.argmax(corr_window))
@@ -266,4 +350,8 @@ def measure_distance(
         "system_latency_s": float(system_latency_s),
         "extra_record_seconds": float(extra_rec),
         "max_distance_m": None if max_distance_m is None else float(max_distance_m),
+        # Диагностика амплитуды (для выявления скачков громкости)
+        "tx_max": float(tx_max),
+        "tx_rms": float(tx_rms),
+        "recorded_max": float(recorded_max),
     }

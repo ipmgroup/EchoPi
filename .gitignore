@@ -32,3 +32,5 @@ dist/
 # Compiled device tree
 *.dtbo
 test_*
+/MD
+/TEST

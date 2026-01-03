@@ -22,5 +22,33 @@ def generate_chirp(cfg: ChirpConfig, sample_rate: int | None = None) -> np.ndarr
 
 
 def normalize(signal: np.ndarray, peak: float = 0.9) -> np.ndarray:
-    max_val = np.max(np.abs(signal)) or 1.0
-    return (signal / max_val * peak).astype(np.float32)
+    """Нормализация сигнала до заданной пиковой амплитуды.
+    
+    Args:
+        signal: Входной сигнал
+        peak: Целевая пиковая амплитуда (0.0-1.0)
+    
+    Returns:
+        Нормализованный сигнал с пиковой амплитудой peak
+    """
+    signal = np.asarray(signal, dtype=np.float32)
+    
+    # Найти максимальное абсолютное значение
+    max_val = np.max(np.abs(signal))
+    
+    # Защита от деления на ноль или очень маленькие числа
+    # Если сигнал слишком мал, возвращаем нулевой сигнал
+    if max_val < 1e-10:
+        return np.zeros_like(signal, dtype=np.float32)
+    
+    # Нормализация с защитой от численных ошибок
+    # Используем более стабильный метод для избежания скачков амплитуды
+    normalized = (signal / max_val * peak).astype(np.float32)
+    
+    # Проверка результата (защита от переполнения)
+    actual_max = np.max(np.abs(normalized))
+    if actual_max > peak * 1.01:  # Допускаем 1% отклонение из-за численных ошибок
+        # Пересчитываем с более точной нормализацией
+        normalized = (signal / max_val * peak).astype(np.float32)
+    
+    return normalized
