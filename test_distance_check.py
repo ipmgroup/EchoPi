@@ -6,14 +6,32 @@ This script will:
 2. Perform 5 distance measurements
 3. Display detailed results and diagnostics
 4. Monitor memory usage
+
+NOTE:
+- Latency and distance require different physical setups.
+    Use --latency and --distance in separate runs to avoid changing external
+    conditions mid-test.
 """
+import argparse
 import sys
+import traceback
 import time
 import tracemalloc
-from echopi.config import AudioDeviceConfig, ChirpConfig
-from echopi.utils.distance import measure_distance
-from echopi.utils.latency import measure_latency
-from echopi import settings
+
+# Allow running this script directly from the repo without installing the package.  # noqa: E501
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from echopi.config import AudioDeviceConfig, ChirpConfig  # noqa: E402
+from echopi.utils.distance import measure_distance  # noqa: E402
+from echopi.utils.latency import measure_latency  # noqa: E402
+from echopi import settings  # noqa: E402
+
+import sounddevice as sd  # noqa: E402
 
 
 def print_section(title: str):
@@ -46,15 +64,22 @@ def measure_latency_test(cfg: AudioDeviceConfig):
     )
     
     try:
-        result = measure_latency(cfg, chirp_cfg)
+        result = measure_latency(cfg, chirp_cfg, repeats=7, discard=2)
         latency_s = result['latency_seconds']
         
-        print(f"\n✓ Latency measured: {latency_s:.6f} s ({latency_s*1000:.3f} ms)")
-        print(f"  Lag samples: {result['lag_samples']}")
+        print(
+            f"\n✓ Latency measured: {latency_s:.6f} s ({latency_s*1000:.3f} ms)"
+        )
+        print(f"  Lag samples (median): {result['lag_samples']}")
+        if 'latency_std_seconds' in result:
+            print(f"  Stability (std): {result['latency_std_seconds']*1000:.3f} ms")
         
-        # Save to config
-        if settings.set_system_latency(latency_s):
-            print(f"  Saved to config: {settings.get_config_file_path()}")
+        # Save to config (sanity-check to avoid saving an echo/incorrect peak)
+        if not (0.0005 <= latency_s <= 0.01):
+            print("  ⚠️  Warning: latency looks unrealistic; not saving")
+        else:
+            if settings.set_system_latency(latency_s):
+                print(f"  Saved to config: {settings.get_config_file_path()}")
         
         return latency_s
         
@@ -72,7 +97,7 @@ def measure_distance_test(cfg: AudioDeviceConfig, num_measurements: int = 5):
     latency = settings.get_system_latency(verbose=True)
     print(f"\nUsing system latency: {latency:.6f} s ({latency*1000:.3f} ms)")
     
-    print(f"\n⚠️  IMPORTANT: Place object at known distance (0.5 - 2.0 m)")
+    print("\n⚠️  IMPORTANT: Place object at known distance (0.5 - 2.0 m)")
     print("Press Enter when ready, or Ctrl+C to skip...")
     try:
         input()
@@ -121,11 +146,11 @@ def measure_distance_test(cfg: AudioDeviceConfig, num_measurements: int = 5):
             
             # Warnings
             if distance_m < 0:
-                print(f"  ⚠️  NEGATIVE distance! Latency too large!")
+                print("  ⚠️  NEGATIVE distance! Latency too large!")
             elif distance_m < 0.01:
-                print(f"  ⚠️  Distance near ZERO! Check connections/volume")
+                print("  ⚠️  Distance near ZERO! Check connections/volume")
             if peak < 0.1:
-                print(f"  ⚠️  WEAK signal! Increase amplitude or reduce noise")
+                print("  ⚠️  WEAK signal! Increase amplitude or reduce noise")
             
             # Wait between measurements
             if i < num_measurements - 1:
@@ -143,18 +168,18 @@ def measure_distance_test(cfg: AudioDeviceConfig, num_measurements: int = 5):
         tofs = [r['time_of_flight_s'] * 1000 for r in results]
         peaks = [r['refined_peak'] for r in results]
         
-        print(f"\nDistance (m):")
+        print("\nDistance (m):")
         print(f"  Mean:   {sum(distances)/len(distances):.3f}")
         print(f"  Min:    {min(distances):.3f}")
         print(f"  Max:    {max(distances):.3f}")
         print(f"  Range:  {max(distances)-min(distances):.3f}")
         
-        print(f"\nTime of Flight (ms):")
+        print("\nTime of Flight (ms):")
         print(f"  Mean:   {sum(tofs)/len(tofs):.3f}")
         print(f"  Min:    {min(tofs):.3f}")
         print(f"  Max:    {max(tofs):.3f}")
         
-        print(f"\nPeak:")
+        print("\nPeak:")
         print(f"  Mean:   {sum(peaks)/len(peaks):.1f}")
         print(f"  Min:    {min(peaks):.1f}")
         print(f"  Max:    {max(peaks):.1f}")
@@ -183,23 +208,76 @@ def check_memory():
 
 def main():
     """Main test function."""
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--latency",
+        action="store_true",
+        help="Measure (and optionally save) system latency only",
+    )
+    parser.add_argument(
+        "--distance",
+        action="store_true",
+        help="Run distance measurements only (uses saved latency)",
+    )
+    parser.add_argument(
+        "--no-save-latency",
+        action="store_true",
+        help="Do not save measured latency to init.json",
+    )
+    args = parser.parse_args()
+
+    run_latency = bool(args.latency)
+    run_distance = bool(args.distance)
+    # Backward-compatible default: run both when no mode flags were provided.
+    if not run_latency and not run_distance:
+        run_latency = True
+        run_distance = True
+
     print("=" * 70)
     print("  EchoPi Distance Measurement Diagnostic")
     print("=" * 70)
     
     # Create audio config
-    cfg = AudioDeviceConfig()
-    print(f"\nAudio Configuration:")
+    cfg = AudioDeviceConfig.from_file()
+
+    # Prefer sample rate from init.json when the selected devices support it.
+    preferred_sr = int(settings.load_settings().get("sample_rate", cfg.sample_rate))
+    try:
+        sd.check_input_settings(device=cfg.rec_device, samplerate=preferred_sr, channels=cfg.channels_rec)
+        sd.check_output_settings(device=cfg.play_device, samplerate=preferred_sr, channels=cfg.channels_play)
+        cfg.sample_rate = preferred_sr
+    except Exception:
+        # Keep cfg.sample_rate from audio_config.json / defaults.
+        pass
+    print("\nAudio Configuration:")
     print(f"  Sample Rate:  {cfg.sample_rate} Hz")
-    print(f"  Device:       {cfg.device_name or 'Default'}")
+    play_dev = getattr(cfg, "play_device", None)
+    rec_dev = getattr(cfg, "rec_device", None)
+    print(f"  Play Device:  {play_dev if play_dev is not None else 'Default'}")
+    print(f"  Rec Device:   {rec_dev if rec_dev is not None else 'Default'}")
     
     try:
-        # Step 1: Measure latency
-        latency = measure_latency_test(cfg)
-        
-        # Step 2: Measure distance
-        measure_distance_test(cfg, num_measurements=5)
-        
+        if run_latency:
+            # Step 1: Measure latency
+            if args.no_save_latency:
+                # Temporarily disable saving by monkey-patching the setter.
+                orig_set = settings.set_system_latency
+
+                def _no_save(_: float) -> bool:
+                    return False
+
+                settings.set_system_latency = _no_save  # type: ignore[assignment]
+                try:
+                    _ = measure_latency_test(cfg)
+                finally:
+                    settings.set_system_latency = orig_set  # type: ignore[assignment]
+            else:
+                _ = measure_latency_test(cfg)
+
+        if run_distance:
+            # Step 2: Measure distance
+            measure_distance_test(cfg, num_measurements=5)  # noqa: E501
+
         # Step 3: Check memory
         check_memory()
         

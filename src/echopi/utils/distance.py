@@ -20,6 +20,41 @@ SPEED_OF_SOUND = {
 _distance_smoothing_buffer = deque(maxlen=3)
 
 
+def compute_extra_record_seconds(
+    *,
+    medium: str,
+    max_distance_m: float | None = None,
+    extra_record_seconds: float | None = None,
+    default_extra_record_seconds: float = 0.1,
+    guard_seconds: float = 0.005,
+) -> float:
+    """Compute how long to keep recording after the chirp ends.
+
+    This separates chirp emission duration from the echo/record window.
+    If `max_distance_m` is provided, the echo window is sized to capture
+    the round-trip time for that distance.
+    """
+    if extra_record_seconds is not None:
+        if extra_record_seconds < 0:
+            raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
+        return float(extra_record_seconds)
+
+    if max_distance_m is None:
+        if default_extra_record_seconds < 0:
+            raise ValueError(
+                f"default_extra_record_seconds must be >= 0, got {default_extra_record_seconds}"
+            )
+        return float(default_extra_record_seconds)
+
+    if max_distance_m <= 0:
+        raise ValueError(f"max_distance_m must be > 0, got {max_distance_m}")
+    if guard_seconds < 0:
+        raise ValueError(f"guard_seconds must be >= 0, got {guard_seconds}")
+
+    sound_speed = SPEED_OF_SOUND.get(medium, SPEED_OF_SOUND["air"])
+    return (2.0 * float(max_distance_m)) / float(sound_speed) + float(guard_seconds)
+
+
 def set_smoothing_buffer_size(size: int):
     """Set the size of the distance smoothing buffer.
     
@@ -43,6 +78,8 @@ def measure_distance(
     medium: str = "air",
     system_latency_s: float = 0.0,
     reference_fade: float = 0.05,
+    max_distance_m: float | None = None,
+    extra_record_seconds: float | None = None,
     enable_smoothing: bool = True,
     filter_size: int = 3,
 ) -> dict:
@@ -55,6 +92,8 @@ def measure_distance(
         medium: Среда распространения ("air" или "water")
         system_latency_s: Известная системная задержка в секундах (TX→RX без акустики)
         reference_fade: Окно для эталона корреляции (0=без окна, >0=Tukey)
+        max_distance_m: Максимальная дистанция (м) для окна поиска пика (None = загрузить из настроек, обычно 5м)
+        extra_record_seconds: Дополнительное время записи после конца импульса (сек). None = вычислить из max_distance_m
         enable_smoothing: Включить сглаживание измерений
         filter_size: Размер фильтра сглаживания (1=без фильтра, 3=умеренный, 5+=сильный)
     
@@ -64,6 +103,12 @@ def measure_distance(
     Raises:
         ValueError: Если параметры некорректны
     """
+    # Load max_distance_m from settings if not provided
+    # This prevents selecting far echoes (e.g., room walls) as the main target
+    if max_distance_m is None:
+        from echopi import settings
+        max_distance_m = settings.get_max_distance()
+    
     # Validate parameters
     if cfg_chirp.duration <= 0:
         raise ValueError(f"Chirp duration must be positive, got {cfg_chirp.duration}")
@@ -77,6 +122,10 @@ def measure_distance(
         raise ValueError(f"Amplitude must be in [0, 1], got {cfg_chirp.amplitude}")
     if filter_size < 0:
         raise ValueError(f"Filter size must be >= 0, got {filter_size}")
+    if max_distance_m is not None and max_distance_m <= 0:
+        raise ValueError(f"max_distance_m must be > 0, got {max_distance_m}")
+    if extra_record_seconds is not None and extra_record_seconds < 0:
+        raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
     
     # Генерация излучаемого чирпа БЕЗ окна (максимальная энергия)
     cfg_tx = ChirpConfig(
@@ -90,9 +139,10 @@ def measure_distance(
     chirp_tx = normalize(chirp_tx, peak=cfg_chirp.amplitude)
     
     # Формирование эталона ВСЕГДА С ОКНОМ для корреляции (уменьшаем боковые лепестки)
-    # Окно всегда используется на приеме для лучшего подавления шумов
-    if reference_fade == 0.0:
-        reference_fade = 0.05  # Минимум 5% окно
+    # Окно всегда используется на приеме для лучшего подавления шумов.
+    # Даже если пользователь просит 0, принудительно держим минимум 5%.
+    if reference_fade <= 0.0 or reference_fade < 0.05:
+        reference_fade = 0.05
     
     cfg_ref = ChirpConfig(
         start_freq=cfg_chirp.start_freq,
@@ -105,51 +155,52 @@ def measure_distance(
     chirp_ref = normalize(chirp_ref, peak=1.0)  # Нормализуем эталон
     
     # Излучение и запись
-    recorded = play_and_record(chirp_tx, cfg_audio)
+    sound_speed = SPEED_OF_SOUND.get(medium, SPEED_OF_SOUND["air"])
+    extra_rec = compute_extra_record_seconds(
+        medium=medium,
+        max_distance_m=max_distance_m,
+        extra_record_seconds=extra_record_seconds,
+        default_extra_record_seconds=0.1,
+        guard_seconds=0.005,
+    )
+
+    recorded = play_and_record(chirp_tx, cfg_audio, extra_record_seconds=extra_rec)
     
     # Корреляция с эталоном (с окном)
     lag_samples, peak, corr = cross_correlation(chirp_ref, recorded)
-    
-    # Поиск нескольких пиков для выбора правильного целевого отражения
-    peaks = find_peaks(corr, num_peaks=15, min_distance=50)
-    
+
     ref_offset = len(chirp_ref) - 1
-    sound_speed = SPEED_OF_SOUND.get(medium, SPEED_OF_SOUND["air"])
-    
-    # Находим ПЕРВЫЙ (самый сильный) пик ПОСЛЕ системной латентности
-    # find_peaks уже отсортировал пики по убыванию амплитуды
-    best_peak_idx = None
-    
-    # Минимальная задержка для фильтрации прямого сигнала (системная латентность + небольшой запас)
+
+    # Define valid lag window: after system latency, and (optionally) before max_distance.
+    # This is critical to avoid selecting far echoes as the "strongest" peak.
     min_lag_samples = system_latency_s * cfg_audio.sample_rate + 50
-    
-    # Минимальная амплитуда пика для фильтрации шумов (20% от максимального пика)
-    if len(peaks) > 0:
-        max_peak_amplitude = peaks[0][1]  # Первый пик - самый сильный
-        min_peak_amplitude = max_peak_amplitude * 0.2
+    start_idx = int(ref_offset + max(0, int(min_lag_samples)))
+    if max_distance_m is None:
+        end_idx = len(corr) - 2
     else:
-        min_peak_amplitude = 0.1
+        # round-trip max time in samples (+small guard handled by extra_rec already)
+        max_lag_samples = (2.0 * float(max_distance_m) / float(sound_speed)) * cfg_audio.sample_rate
+        end_idx = int(min(len(corr) - 2, ref_offset + int(max_lag_samples)))
+    if end_idx <= start_idx + 2:
+        # Fallback if window is invalid
+        end_idx = len(corr) - 2
+
+    corr_window = corr[start_idx:end_idx]
+    if corr_window.size == 0:
+        raise ValueError("Correlation window is empty; check max_distance/latency")
+
+    # Find all peaks in the correlation window
+    peaks = find_peaks(corr_window, num_peaks=15, min_distance=50)
     
-    # Берем ПЕРВЫЙ пик из отсортированного списка, который проходит фильтры
-    # Это будет самый сильный пик после системной латентности с достаточной амплитудой
-    for idx, value in peaks:
-        lag = idx - ref_offset
-        
-        # Пропускаем пики до системной латентности (это прямые сигналы/наводки)
-        if lag < min_lag_samples:
-            continue
-        
-        # Пропускаем слабые пики (шумы и слабые отражения)
-        if value < min_peak_amplitude:
-            continue
-        
-        # Берем первый подходящий = самый сильный (список уже отсортирован)
-        best_peak_idx = idx
-        break
-    
-    # Если не найден подходящий пик, используем просто самый сильный
-    if best_peak_idx is None and len(peaks) > 0:
-        best_peak_idx = peaks[0][0]
+    if len(peaks) > 0:
+        # Take the STRONGEST peak from the window (peaks are sorted by amplitude descending)
+        # This is the actual target reflection
+        # Original logic from first commit: strongest peak in valid window
+        best_peak_relative_idx, best_peak_value = peaks[0]
+        best_peak_idx = start_idx + best_peak_relative_idx
+    else:
+        # Fallback: use maximum value in window
+        best_peak_idx = int(start_idx + np.argmax(corr_window))
     
     # Финальная интерполяция выбранного пика
     refined_idx, refined_peak = parabolic_interpolate(corr, best_peak_idx)
@@ -190,4 +241,6 @@ def measure_distance(
         "medium": medium,
         "total_time_s": float(total_time_s),
         "system_latency_s": float(system_latency_s),
+        "extra_record_seconds": float(extra_rec),
+        "max_distance_m": None if max_distance_m is None else float(max_distance_m),
     }

@@ -62,6 +62,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     _add_audio_flags(p_sonar)
     p_sonar.add_argument("--gui", action="store_true", help="Run interactive GUI mode (default is GUI)")
     p_sonar.add_argument("--fullscreen", action="store_true", help="Run in fullscreen mode")
+    p_sonar.add_argument(
+        "--max-distance",
+        type=float,
+        default=None,
+        help="Initial max distance in meters (sets echo record window in GUI)",
+    )
 
     p_check = sub.add_parser("check-device", help="Verify that input/output devices are available")
     _add_audio_flags(p_check)
@@ -73,6 +79,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p_lat.add_argument("--duration", type=float, default=0.05)
     p_lat.add_argument("--amp", type=float, default=0.8)
     p_lat.add_argument("--fade", type=float, default=0.0)
+    p_lat.add_argument("--repeats", type=int, default=7, help="Number of measurements to aggregate (median)")
+    p_lat.add_argument("--discard", type=int, default=2, help="Discard first N runs (warmup)")
+    p_lat.add_argument("--raw", action="store_true", help="Print per-run values (no median-focused output)")
 
     p_dist = sub.add_parser("distance", help="Measure distance to target via sonar")
     _add_audio_flags(p_dist)
@@ -84,6 +93,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     p_dist.add_argument("--ref-fade", type=float, default=0.05, help="Reference fade for correlation (0.05=Tukey 5%%)")
     p_dist.add_argument("--medium", type=str, default="air", choices=["air", "water"], help="Propagation medium")
     p_dist.add_argument("--sys-latency", type=float, default=None, help="System latency in seconds (default: from config)")
+    p_dist.add_argument(
+        "--max-distance",
+        type=float,
+        default=None,
+        help="Max distance in meters used to size echo record window (separates echo window from chirp duration)",
+    )
     p_dist.add_argument("--filter", type=int, default=3, help="Smoothing filter size (0=off, 1=raw, 3=moderate, 5+=heavy)")
 
     p_config = sub.add_parser("config", help="View or edit configuration")
@@ -98,7 +113,7 @@ def _add_audio_flags(parser: argparse.ArgumentParser, playback_only: bool = Fals
         parser.add_argument("--play-device", type=str, default=None, help="Playback device index or name")
     if not playback_only:
         parser.add_argument("--rec-device", type=str, default=None, help="Input device index or name")
-    parser.add_argument("--sr", type=int, default=None, help="Sample rate (default from config file or 96000)")
+    parser.add_argument("--sr", type=int, default=None, help="Sample rate (default from config file or 48000 for INMP441)")
     parser.add_argument("--frames", type=int, default=2048, help="Frames per buffer")
 
 
@@ -224,15 +239,44 @@ def cmd_check_device(args: argparse.Namespace):
 def cmd_latency(args: argparse.Namespace):
     cfg_audio = _build_audio_cfg(args)
     cfg_chirp = ChirpConfig(start_freq=args.start, end_freq=args.end, duration=args.duration, amplitude=args.amp, fade_fraction=args.fade)
-    result = measure_latency(cfg_audio, cfg_chirp)
+    result = measure_latency(cfg_audio, cfg_chirp, repeats=args.repeats, discard=args.discard)
     
     latency_s = result['latency_seconds']
-    print(f"Lag samples: {result['lag_samples']}")
-    print(f"Latency: {latency_s*1000:.3f} ms")
-    print(f"Correlation length: {result['correlation_length']}")
+    std_s = result.get('latency_std_seconds', 0.0)
+
+    if getattr(args, "raw", False) and 'latencies_seconds' in result:
+        vals_s = result['latencies_seconds']
+        vals_ms = [v * 1000 for v in vals_s]
+        vals_samples = [int(round(v * cfg_audio.sample_rate)) for v in vals_s]
+        print(f"Runs: {len(vals_ms)} (repeats={result.get('repeats')}, discard={result.get('discard')})")
+        for i, (ms, samp) in enumerate(zip(vals_ms, vals_samples), start=1):
+            print(f"  [{i:02d}] {ms:8.3f} ms  ({samp:5d} samples)")
+        print(f"Summary: median={latency_s*1000:.3f} ms, std={std_s*1000:.3f} ms")
+    else:
+        print(f"Lag samples (median): {result['lag_samples']}")
+        print(f"Latency (median): {latency_s*1000:.3f} ms")
+        print(f"Stability (std): {std_s*1000:.3f} ms")
+        if 'latencies_seconds' in result:
+            raw_vals = [f"{v*1000:.3f}" for v in result['latencies_seconds']]
+            used_list = result.get('latencies_used_seconds', result['latencies_seconds'])
+            used_vals = [f"{v*1000:.3f}" for v in used_list]
+            print(
+                f"Runs used: {len(used_vals)}/{len(raw_vals)} "
+                f"(repeats={result.get('repeats')}, discard={result.get('discard')})"
+            )
+            print("Per-run used ms:", ", ".join(used_vals))
+            if len(raw_vals) != len(used_vals):
+                print("Per-run raw ms:", ", ".join(raw_vals))
+        print(f"Correlation length: {result['correlation_length']}")
     print()
     
-    # Save to config file
+    # Save to config file (sanity-check to avoid saving echo/incorrect peak)
+    if not (0.0005 <= latency_s <= 0.01):
+        print("⚠ Warning: Measured latency looks unrealistic; not saving.")
+        print("  Tip: place speaker 1–5 cm from microphone and re-run.")
+        print("  If you really want to save it, use: echopi config --set-latency <seconds>")
+        return
+
     if settings.set_system_latency(latency_s):
         config_file = settings.get_config_file_path()
         print(f"✓ System latency saved to {config_file}")
@@ -259,6 +303,7 @@ def cmd_distance(args: argparse.Namespace):
         medium=args.medium, 
         system_latency_s=sys_latency, 
         reference_fade=args.ref_fade,
+        max_distance_m=args.max_distance,
         filter_size=args.filter
     )
     
@@ -266,6 +311,8 @@ def cmd_distance(args: argparse.Namespace):
     print(f"Sound speed: {result['sound_speed']:.1f} m/s")
     print(f"Total time: {result['total_time_s']*1000:.3f} ms")
     print(f"System latency: {result['system_latency_s']*1000:.3f} ms")
+    if result.get('extra_record_seconds') is not None:
+        print(f"Echo window: {result['extra_record_seconds']*1000:.1f} ms")
     print(f"Time of flight: {result['time_of_flight_s']*1000:.3f} ms")
     print(f"Lag samples: {result['lag_samples']} (refined: {result['refined_lag']:.2f})")
     print(f"Peak: {result['peak']:.1f} (refined: {result['refined_peak']:.1f})")
@@ -282,7 +329,12 @@ def cmd_sonar(args: argparse.Namespace):
     cfg = _build_audio_cfg(args)
     # Note: --gui flag is always True by default behavior, not explicitly checked
     # When launched via CLI, show_warning=False (running through proper Core echopi)
-    run_sonar_gui(cfg=cfg, fullscreen=args.fullscreen, show_warning=False)
+    run_sonar_gui(
+        cfg=cfg,
+        fullscreen=args.fullscreen,
+        show_warning=False,
+        max_distance_m=args.max_distance,
+    )
 
 
 def cmd_config(args: argparse.Namespace):

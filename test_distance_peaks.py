@@ -32,6 +32,12 @@ def main():
     print(f"System latency: {system_latency_s*1000:.3f} ms")
     print()
     
+    # ВАЖНО: ограничим окно поиска разумной дистанцией (например, 2.5 метров)
+    # Это предотвратит выбор дальних отражений
+    max_distance_m = 2.5  # метров
+    print(f"Max search distance: {max_distance_m} m")
+    print()
+    
     # Генерация чирпа для излучения (БЕЗ окна)
     chirp_tx = generate_chirp(cfg_chirp, sample_rate=cfg_audio.sample_rate)
     chirp_tx = normalize(chirp_tx, peak=cfg_chirp.amplitude)
@@ -54,14 +60,27 @@ def main():
     # Корреляция
     lag_samples, peak, corr = cross_correlation(chirp_ref, recorded)
     
-    # Поиск нескольких пиков
-    peaks = find_peaks(corr, num_peaks=10, min_distance=100)
-    
-    print(f"Найдено {len(peaks)} пиков:")
-    print("="*80)
-    
+    # Вычисляем окно поиска на основе max_distance_m
     ref_offset = len(chirp_ref) - 1
     sound_speed = 343.0  # м/с
+    min_lag_samples = system_latency_s * cfg_audio.sample_rate + 50
+    max_lag_samples = (2.0 * max_distance_m / sound_speed) * cfg_audio.sample_rate
+    
+    start_idx = int(ref_offset + max(0, int(min_lag_samples)))
+    end_idx = int(min(len(corr) - 2, ref_offset + int(max_lag_samples)))
+    
+    print(f"Search window: samples {start_idx} to {end_idx} (lag {int(min_lag_samples)} to {int(max_lag_samples)})")
+    print()
+    
+    # Поиск нескольких пиков ТОЛЬКО в окне поиска
+    corr_window = corr[start_idx:end_idx]
+    peaks_window = find_peaks(corr_window, num_peaks=10, min_distance=100)
+    
+    # Преобразуем индексы обратно к полному массиву корреляции
+    peaks = [(start_idx + idx, value) for idx, value in peaks_window]
+    
+    print(f"Найдено {len(peaks)} пиков в окне поиска:")
+    print("="*80)
     
     for i, (idx, value) in enumerate(peaks, 1):
         # Интерполяция

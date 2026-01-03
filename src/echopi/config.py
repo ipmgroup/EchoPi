@@ -13,7 +13,7 @@ class AudioDeviceConfig:
     sample_rate: int = 48000
     channels_play: int = 1
     channels_rec: int = 1
-    frames_per_buffer: int = 2048
+    frames_per_buffer: int = 2048  # Рекомендуется 256 для низкой задержки (см. README 5.3), но 2048 безопаснее (меньше XRUN)
     latency: str | float | None = None  # "low", "high", float seconds or None
 
     @classmethod

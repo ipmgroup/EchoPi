@@ -1,34 +1,32 @@
 /*
- * Device Tree Overlay for bidirectional I2S at 96 kHz
- * MAX98357A (output) + INMP441 (input)
- * Using asoc-simple-card with spdif-transmitter (playback) and spdif-receiver (capture)
+ * Device Tree Overlay for bidirectional (full-duplex) I2S
+ * Target: Raspberry Pi 5 (RP1) with I2S clock producer (Pi is BCLK/LRCLK master)
+ * External devices: MAX98357A (playback) + INMP441 (capture)
+ *
+ * Note:
+ * - These devices don't require I2C control.
+ * - We use snd-soc-dummy as a codec endpoint; the RP1 I2S controller drives pins.
  */
 
 /dts-v1/;
 /plugin/;
 
 / {
-    compatible = "brcm,bcm2835";
+    compatible = "brcm,bcm2712", "brcm,bcm2835";
 
     fragment@0 {
         target-path = "/";
         __overlay__ {
-            codec_out: spdif-transmitter {
+            dummy_codec: dummy-codec {
                 #sound-dai-cells = <0>;
-                compatible = "linux,spdif-dit";
-                status = "okay";
-            };
-
-            codec_in: spdif-receiver {
-                #sound-dai-cells = <0>;
-                compatible = "linux,spdif-dir";
+                compatible = "snd-soc-dummy";
                 status = "okay";
             };
         };
     };
 
     fragment@1 {
-        target = <&i2s_clk_consumer>;
+        target = <&i2s_clk_producer>;
         __overlay__ {
             status = "okay";
         };
@@ -43,18 +41,15 @@
                 status = "okay";
 
                 simple-audio-card,format = "i2s";
-                
                 simple-audio-card,bitclock-master = <&dailink_master>;
                 simple-audio-card,frame-master = <&dailink_master>;
 
                 dailink_master: simple-audio-card,cpu {
-                    sound-dai = <&i2s_clk_consumer>;
-                    dai-tdm-slot-num = <2>;
-                    dai-tdm-slot-width = <32>;
+                    sound-dai = <&i2s_clk_producer>;
                 };
 
                 simple-audio-card,codec {
-                    sound-dai = <&codec_out>, <&codec_in>;
+                    sound-dai = <&dummy_codec>;
                 };
             };
         };

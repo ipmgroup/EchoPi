@@ -62,6 +62,7 @@ echopi distance \
   --play-device 0 \
   --sr 48000 \
   --sys-latency 0.00121 \
+  --max-distance 10 \
   --start 2000 \
   --end 20000 \
   --duration 0.05 \

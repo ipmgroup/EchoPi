@@ -22,8 +22,14 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from echopi.config import AudioDeviceConfig, ChirpConfig
-from echopi.utils.distance import measure_distance, clear_distance_smoothing, set_smoothing_buffer_size
+from echopi.utils.distance import (
+    compute_extra_record_seconds,
+    measure_distance,
+    clear_distance_smoothing,
+    set_smoothing_buffer_size,
+)
 from echopi.utils.latency import measure_latency
+from echopi.io import audio
 from echopi import settings
 
 
@@ -60,22 +66,41 @@ class SonarGUI(QtCore.QObject):
     update_signal = QtCore.pyqtSignal(dict)
     latency_signal = QtCore.pyqtSignal(dict)
     
-    def __init__(self, cfg: AudioDeviceConfig, fullscreen: bool = False):
+    def __init__(
+        self,
+        cfg: AudioDeviceConfig,
+        fullscreen: bool = False,
+        max_distance_m: float | None = None,
+    ):
         super().__init__()
         self.cfg = cfg
         self.fullscreen = fullscreen
         self.running = False
         self.measurement_thread = None
         
-        # Default parameters
-        self.start_freq = 2000.0
-        self.end_freq = 20000.0
-        self.duration = 0.05
-        self.amplitude = 0.8
-        self.medium = "air"
-        self.filter_size = 3  # Default smoothing filter size
+        # Default parameters (load from init.json)
+        gui_s = settings.get_gui_settings()
+        self.start_freq = float(gui_s.get("start_freq_hz", 2000.0))
+        self.end_freq = float(gui_s.get("end_freq_hz", 20000.0))
+        self.duration = float(gui_s.get("chirp_duration_s", 0.05))
+        self.amplitude = float(gui_s.get("amplitude", 0.8))
+        self.medium = str(gui_s.get("medium", "air"))
+        # Max distance controls echo record window (separate from chirp duration).
+        # Default comes from init.json; CLI can override.
+        if max_distance_m is None:
+            self.max_distance_m = float(gui_s.get("max_distance_m", settings.get_max_distance()))
+        else:
+            self.max_distance_m = float(max_distance_m)
+            # Persist CLI override so next GUI start keeps it.
+            try:
+                settings.set_max_distance(self.max_distance_m)
+            except Exception as e:
+                print(f"Warning: failed to persist max_distance_m: {e}")
+
+        self.filter_size = int(gui_s.get("filter_size", 3))
+        self.update_rate_hz = float(gui_s.get("update_rate_hz", 2.0))
         # Load system latency from config file (init.json if exists, otherwise default)
-        self.system_latency = settings.get_system_latency()
+        self.system_latency = float(gui_s.get("system_latency_s", settings.get_system_latency()))
         
         # Measurement history
         self.history_time = []
@@ -208,12 +233,14 @@ class SonarGUI(QtCore.QObject):
         self.start_freq_spin.setRange(100, 24000)
         self.start_freq_spin.setValue(int(self.start_freq))
         self.start_freq_spin.setSuffix(" Hz")
+        self.start_freq_spin.valueChanged.connect(self._on_start_freq_changed)
         chirp_layout.addRow("Start Freq:", self.start_freq_spin)
         
         self.end_freq_spin = QtWidgets.QSpinBox()
         self.end_freq_spin.setRange(100, 24000)
         self.end_freq_spin.setValue(int(self.end_freq))
         self.end_freq_spin.setSuffix(" Hz")
+        self.end_freq_spin.valueChanged.connect(self._on_end_freq_changed)
         chirp_layout.addRow("End Freq:", self.end_freq_spin)
         
         self.duration_spin = QtWidgets.QDoubleSpinBox()
@@ -233,9 +260,7 @@ class SonarGUI(QtCore.QObject):
         amp_layout.addWidget(self.amplitude_slider)
         amp_layout.addWidget(self.amplitude_value_label)
         chirp_layout.addRow("Amplitude:", amp_layout)
-        self.amplitude_slider.valueChanged.connect(
-            lambda v: self.amplitude_value_label.setText(f"{v/100:.2f}")
-        )
+        self.amplitude_slider.valueChanged.connect(self._on_amplitude_changed)
         
         control_layout.addWidget(chirp_group)
         
@@ -247,7 +272,22 @@ class SonarGUI(QtCore.QObject):
         self.medium_combo = QtWidgets.QComboBox()
         self.medium_combo.addItems(["air", "water"])
         self.medium_combo.setCurrentText(self.medium)
+        self.medium_combo.currentTextChanged.connect(self._on_medium_changed)
         system_layout.addRow("Medium:", self.medium_combo)
+
+        self.max_distance_spin = QtWidgets.QDoubleSpinBox()
+        self.max_distance_spin.setRange(0.1, 200.0)
+        self.max_distance_spin.setDecimals(1)
+        self.max_distance_spin.setSingleStep(0.5)
+        self.max_distance_spin.setSuffix(" m")
+        self.max_distance_spin.setValue(self.max_distance_m)
+        self.max_distance_spin.setToolTip("Defines echo record window based on round-trip time to this distance")
+        self.max_distance_spin.valueChanged.connect(self._on_max_distance_changed)
+        system_layout.addRow("Max Distance:", self.max_distance_spin)
+
+        self.echo_window_label = QtWidgets.QLabel("Echo Window: ---")
+        self.echo_window_label.setStyleSheet("font-size: 11px; color: #666;")
+        system_layout.addRow("", self.echo_window_label)
         
         self.latency_spin = QtWidgets.QDoubleSpinBox()
         self.latency_spin.setRange(0.0, 1.0)
@@ -287,7 +327,7 @@ class SonarGUI(QtCore.QObject):
         
         self.update_rate_spin = QtWidgets.QDoubleSpinBox()
         self.update_rate_spin.setRange(0.1, 10.0)
-        self.update_rate_spin.setValue(2.0)
+        self.update_rate_spin.setValue(self.update_rate_hz)
         self.update_rate_spin.setSingleStep(0.1)
         self.update_rate_spin.setDecimals(1)
         self.update_rate_spin.setSuffix(" Hz")
@@ -316,6 +356,9 @@ class SonarGUI(QtCore.QObject):
         
         # Show window
         self.win.show()
+
+        # Initialize derived echo window label and validation
+        self._refresh_echo_window()
     
     def _toggle_sonar(self):
         """Enable/disable sonar."""
@@ -328,6 +371,12 @@ class SonarGUI(QtCore.QObject):
         """Start sonar."""
         # Clear screen on start
         self._clear_history()
+
+        # Reset persistent audio stream so first measurement starts clean.
+        try:
+            audio.close_global_stream()
+        except Exception as e:
+            print(f"Warning: failed to reset audio stream: {e}")
         
         self.running = True
         # Clear smoothing buffer when starting new session
@@ -387,12 +436,15 @@ class SonarGUI(QtCore.QObject):
         
         while self.running:
             try:
+                loop_t0 = time.monotonic()
+
                 # Read parameters from UI
                 start_freq = float(self.start_freq_spin.value())
                 end_freq = float(self.end_freq_spin.value())
                 duration = float(self.duration_spin.value())
                 amplitude = float(self.amplitude_slider.value()) / 100.0
                 medium = str(self.medium_combo.currentText())
+                max_distance_m = float(self.max_distance_spin.value())
                 system_latency = float(self.latency_spin.value())
                 update_rate = float(self.update_rate_spin.value())
                 filter_size = int(self.filter_spin.value())
@@ -413,6 +465,7 @@ class SonarGUI(QtCore.QObject):
                     medium=medium,
                     system_latency_s=system_latency,
                     reference_fade=0.05,
+                    max_distance_m=max_distance_m,
                     filter_size=filter_size
                 )
                 
@@ -424,17 +477,16 @@ class SonarGUI(QtCore.QObject):
                 
                 # Send result via signal
                 self.update_signal.emit(result_copy)
-                
-                # Wait before next measurement
-                # Add minimum delay to allow audio buffer to settle
-                if update_rate > 0:
-                    interval = 1.0 / update_rate
-                    # Ensure at least 100ms delay after chirp for buffer cleanup
-                    min_delay = duration + 0.1
-                    actual_delay = max(interval, min_delay)
-                    time.sleep(actual_delay)
-                else:
-                    time.sleep(1.0)
+
+                # Wait before next measurement.
+                # IMPORTANT: do not add artificial +100ms here.
+                # The measurement itself already includes audio I/O time.
+                # We only sleep the remaining time to match requested update_rate.
+                interval = 1.0 / update_rate if update_rate > 0 else 1.0
+                elapsed = time.monotonic() - loop_t0
+                sleep_s = interval - elapsed
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
                 
             except ValueError as e:
                 # Parameter validation error from core
@@ -581,20 +633,19 @@ class SonarGUI(QtCore.QObject):
             return
         
         # Show instruction dialog
-        msg = QtWidgets.QMessageBox(self.win)
-        msg.setIcon(QtWidgets.QMessageBox.Information)
-        msg.setWindowTitle("Latency Measurement")
-        msg.setText("Place speaker CLOSE to microphone")
-        msg.setInformativeText(
+        result = QtWidgets.QMessageBox.question(
+            self.win,
+            "Latency Measurement",
+            "Place speaker CLOSE to microphone\n\n"
             "For accurate system latency measurement:\n\n"
             "1. Position speaker near microphone (1-5 cm)\n"
             "2. Ensure there is no background noise\n"
             "3. Press OK to start measurement\n\n"
-            "Measurement will take ~1 second"
+            "Measurement will take ~1 second",
+            QtWidgets.QMessageBox.StandardButton.Ok | QtWidgets.QMessageBox.StandardButton.Cancel
         )
-        msg.setStandardButtons(QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
         
-        if msg.exec() != QtWidgets.QMessageBox.Ok:
+        if result != QtWidgets.QMessageBox.StandardButton.Ok:
             return
         
         # Disable button and show progress
@@ -650,6 +701,18 @@ class SonarGUI(QtCore.QObject):
         try:
             latency_s = result['latency_seconds']
             lag_samples = result['lag_samples']
+
+            # Sanity-check: if speaker isn't close, correlation may lock on an echo.
+            # Avoid overwriting good saved latency with an unrealistic value.
+            if not (0.0 <= float(latency_s) <= 0.02):
+                QtWidgets.QMessageBox.warning(
+                    self.win,
+                    "Latency Looks Wrong",
+                    f"Measured latency looks unrealistic: {latency_s*1000:.1f} ms\n\n"
+                    "Not saving this value.\n"
+                    "Tip: place speaker 1–5 cm from microphone and remeasure."
+                )
+                return
             
             # Update value in UI
             self.latency_spin.setValue(latency_s)
@@ -660,16 +723,14 @@ class SonarGUI(QtCore.QObject):
                 print(f"System latency saved to {config_file}")
             
             # Show result
-            msg = QtWidgets.QMessageBox(self.win)
-            msg.setIcon(QtWidgets.QMessageBox.Information)
-            msg.setWindowTitle("Latency Measured")
-            msg.setText(f"System latency: {latency_s*1000:.3f} ms")
-            msg.setInformativeText(
+            QtWidgets.QMessageBox.information(
+                self.win,
+                "Latency Measured",
+                f"System latency: {latency_s*1000:.3f} ms\n\n"
                 f"Lag: {lag_samples} samples\n"
                 f"Sample rate: {self.cfg.sample_rate} Hz\n\n"
                 "Value automatically updated in settings."
             )
-            msg.exec()
             
         except Exception as e:
             QtWidgets.QMessageBox.critical(
@@ -683,10 +744,29 @@ class SonarGUI(QtCore.QObject):
         if settings.set_system_latency(value):
             self.system_latency = value
             print(f"✓ System latency updated: {value:.5f} s")
+            settings.set_gui_settings({"system_latency_s": float(value)})
+
+
+    def _on_start_freq_changed(self, value: int):
+        self.start_freq = float(value)
+        settings.set_gui_settings({"start_freq_hz": float(value)})
+
+
+    def _on_end_freq_changed(self, value: int):
+        self.end_freq = float(value)
+        settings.set_gui_settings({"end_freq_hz": float(value)})
+
+
+    def _on_amplitude_changed(self, v: int):
+        value = float(v) / 100.0
+        self.amplitude_value_label.setText(f"{value:.2f}")
+        self.amplitude = value
+        settings.set_gui_settings({"amplitude": value})
     
     def _on_filter_changed(self, value: int):
         """Update filter size when changed."""
         self.filter_size = value
+        settings.set_gui_settings({"filter_size": int(value)})
         if value > 1:
             set_smoothing_buffer_size(value)
             print(f"✓ Filter size changed: {value}")
@@ -694,74 +774,98 @@ class SonarGUI(QtCore.QObject):
             print("✓ Filter: no smoothing (raw values)")
         else:
             print("✓ Filter: OFF")
+
+
+    def _refresh_echo_window(self):
+        """Update echo window label and re-validate update rate."""
+        medium = str(self.medium_combo.currentText())
+        max_distance_m = float(self.max_distance_spin.value())
+        echo_s = compute_extra_record_seconds(medium=medium, max_distance_m=max_distance_m)
+        self.echo_window_label.setText(f"Echo Window: {echo_s*1000:.1f} ms")
+        # Trigger validation of update rate against current duration + echo window
+        self._on_duration_changed(float(self.duration_spin.value()))
+
+
+    def _on_medium_changed(self, _value: str):
+        settings.set_gui_settings({"medium": str(self.medium_combo.currentText())})
+        self._refresh_echo_window()
+
+
+    def _on_max_distance_changed(self, _value: float):
+        value = float(self.max_distance_spin.value())
+        self.max_distance_m = value
+        try:
+            settings.set_max_distance(value)
+        except Exception as e:
+            print(f"Warning: failed to save max_distance_m: {e}")
+        settings.set_gui_settings({"max_distance_m": value})
+        self._refresh_echo_window()
     
     def _on_duration_changed(self, duration: float):
-        """Validate duration vs update rate when duration changes."""
+        """Validate duration vs update rate when duration changes.
+
+        Rule: measurement period must be >= pulse duration + echo window.
+        I.e. update_rate <= 1 / (duration + echo_window).
+        """
         self.duration = duration
-        # Check if update rate is too fast for this duration
-        max_update_rate = 1.0 / (duration + 0.1)  # Add 100ms buffer cleanup time
-        current_update_rate = self.update_rate_spin.value()
-        
-        if current_update_rate > max_update_rate:
-            # Adjust update rate to safe value
-            safe_rate = round(max_update_rate, 1)
-            self.update_rate_spin.setValue(safe_rate)
-            print(f"⚠ Update rate adjusted to {safe_rate:.1f} Hz (max for {duration:.3f}s pulse)")
-    
-    def _on_update_rate_changed(self, update_rate: float):
-        """Validate update rate vs duration when update rate changes."""
-        duration = self.duration_spin.value()
-        min_period = duration + 0.1  # Pulse duration + 100ms buffer
+        settings.set_gui_settings({"chirp_duration_s": float(duration)})
+        if duration <= 0:
+            return
+
+        medium = str(self.medium_combo.currentText())
+        max_distance_m = float(self.max_distance_spin.value())
+        echo_s = compute_extra_record_seconds(medium=medium, max_distance_m=max_distance_m)
+        min_period = duration + echo_s
         max_update_rate = 1.0 / min_period
-        
-        if update_rate > max_update_rate:
-            # Clamp to maximum safe rate
-            safe_rate = round(max_update_rate, 1)
-            self.update_rate_spin.blockSignals(True)  # Prevent recursion
+        current_update_rate = float(self.update_rate_spin.value())
+        if current_update_rate > max_update_rate:
+            safe_rate = min(self.update_rate_spin.maximum(), max_update_rate)
+            safe_rate = round(safe_rate, 1)
+            self.update_rate_spin.blockSignals(True)
             self.update_rate_spin.setValue(safe_rate)
             self.update_rate_spin.blockSignals(False)
-            print(f"⚠ Update rate too fast! Max {safe_rate:.1f} Hz for {duration:.3f}s pulse")
-            QtWidgets.QMessageBox.warning(
-                self.win,
-                "Invalid Update Rate",
-                f"Update rate cannot exceed {safe_rate:.1f} Hz\n"
-                f"for pulse duration {duration:.3f}s\n\n"
-                f"Minimum period = pulse + 100ms buffer\n"
-                f"= {min_period:.3f}s = {max_update_rate:.1f} Hz max"
+            print(
+                f"⚠ Update rate adjusted to {safe_rate:.1f} Hz "
+                f"(min period {min_period:.3f}s = pulse {duration:.3f}s + echo {echo_s:.3f}s)"
             )
-    
-    def _on_duration_changed(self, duration: float):
-        """Validate duration vs update rate when duration changes."""
-        self.duration = duration
-        # Check if update rate is too fast for this duration
-        max_update_rate = 1.0 / (duration + 0.1)  # Add 100ms buffer cleanup time
-        current_update_rate = self.update_rate_spin.value()
-        
-        if current_update_rate > max_update_rate:
-            # Adjust update rate to safe value
-            safe_rate = round(max_update_rate, 1)
-            self.update_rate_spin.setValue(safe_rate)
-            print(f"⚠ Update rate adjusted to {safe_rate:.1f} Hz (max for {duration:.3f}s pulse)")
-    
+
     def _on_update_rate_changed(self, update_rate: float):
-        """Validate update rate vs duration when update rate changes."""
-        duration = self.duration_spin.value()
-        min_period = duration + 0.1  # Pulse duration + 100ms buffer
+        """Validate update rate vs duration when update rate changes.
+
+        Rule: measurement period must be >= pulse duration + echo window.
+        I.e. update_rate <= 1 / (duration + echo_window).
+        """
+        duration = float(self.duration_spin.value())
+        if duration <= 0:
+            return
+
+        medium = str(self.medium_combo.currentText())
+        max_distance_m = float(self.max_distance_spin.value())
+        echo_s = compute_extra_record_seconds(medium=medium, max_distance_m=max_distance_m)
+        min_period = duration + echo_s
         max_update_rate = 1.0 / min_period
-        
         if update_rate > max_update_rate:
-            # Clamp to maximum safe rate
-            safe_rate = round(max_update_rate, 1)
+            safe_rate = min(self.update_rate_spin.maximum(), max_update_rate)
+            safe_rate = round(safe_rate, 1)
+            self.update_rate_spin.blockSignals(True)
             self.update_rate_spin.setValue(safe_rate)
-            print(f"⚠ Update rate too fast! Max {safe_rate:.1f} Hz for {duration:.3f}s pulse")
+            self.update_rate_spin.blockSignals(False)
+            settings.set_gui_settings({"update_rate_hz": float(safe_rate)})
+            print(
+                f"⚠ Update rate too fast! Max {safe_rate:.1f} Hz "
+                f"(min period {min_period:.3f}s = pulse {duration:.3f}s + echo {echo_s:.3f}s)"
+            )
             QtWidgets.QMessageBox.warning(
                 self.win,
                 "Invalid Update Rate",
                 f"Update rate cannot exceed {safe_rate:.1f} Hz\n"
-                f"for pulse duration {duration:.3f}s\n\n"
-                f"Minimum period = pulse + 100ms buffer\n"
-                f"= {min_period:.3f}s = {max_update_rate:.1f} Hz max"
+                f"for pulse duration {duration:.3f}s\n"
+                f"and echo window {echo_s:.3f}s\n\n"
+                f"Rule: period >= pulse + echo\n"
+                f"Min period = {min_period:.3f}s => max {max_update_rate:.1f} Hz"
             )
+        else:
+            settings.set_gui_settings({"update_rate_hz": float(update_rate)})
     
     def run(self):
         """Run the application."""
@@ -782,7 +886,12 @@ class SonarGUI(QtCore.QObject):
                 pass
 
 
-def run_sonar_gui(cfg: AudioDeviceConfig, fullscreen: bool = False, show_warning: bool = False):
+def run_sonar_gui(
+    cfg: AudioDeviceConfig,
+    fullscreen: bool = False,
+    show_warning: bool = False,
+    max_distance_m: float | None = None,
+):
     """Launch interactive sonar GUI.
     
     WARNING: This is a frontend only. All sonar computations must be
@@ -804,7 +913,7 @@ def run_sonar_gui(cfg: AudioDeviceConfig, fullscreen: bool = False, show_warning
     if show_warning:
         app = pg.mkQApp("EchoPi Sonar")
         msg = QtWidgets.QMessageBox()
-        msg.setIcon(QtWidgets.QMessageBox.Warning)
+        msg.setIcon(QtWidgets.QMessageBox.Icon.Warning)
         msg.setWindowTitle("⚠️ Sonar GUI Running Without Core echopi")
         msg.setText("This GUI is running in STANDALONE mode")
         msg.setInformativeText(
@@ -819,13 +928,13 @@ def run_sonar_gui(cfg: AudioDeviceConfig, fullscreen: bool = False, show_warning
             "Direct execution is for TESTING ONLY.\n"
             "Continue anyway?"
         )
-        msg.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        msg.setDefaultButton(QtWidgets.QMessageBox.No)
+        msg.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No)
+        msg.setDefaultButton(QtWidgets.QMessageBox.StandardButton.No)
         
-        if msg.exec() != QtWidgets.QMessageBox.Yes:
+        if msg.exec() != QtWidgets.QMessageBox.StandardButton.Yes:
             sys.exit(0)
     
-    gui = SonarGUI(cfg, fullscreen=fullscreen)
+    gui = SonarGUI(cfg, fullscreen=fullscreen, max_distance_m=max_distance_m)
     gui.run()
 
 

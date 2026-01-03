@@ -7,7 +7,7 @@ from echopi.config import ChirpConfig
 
 
 def generate_chirp(cfg: ChirpConfig, sample_rate: int | None = None) -> np.ndarray:
-    sr = sample_rate or 96000
+    sr = sample_rate or 48000  # INMP441 максимум 50 кГц, по умолчанию 48 кГц
     t = np.linspace(0.0, cfg.duration, int(sr * cfg.duration), endpoint=False)
     sweep = scipy.signal.chirp(t, f0=cfg.start_freq, f1=cfg.end_freq, t1=cfg.duration, method="linear")
     if cfg.fade_fraction > 0:
