@@ -29,7 +29,8 @@ from echopi.utils.distance import (
     set_smoothing_buffer_size,
 )
 from echopi.utils.latency import measure_latency
-from echopi.io import audio
+from echopi.dsp.signal_optimization import optimize_chirp_duration
+from echopi.io import audio_safe as audio
 from echopi import settings
 
 
@@ -254,6 +255,23 @@ class SonarGUI(QtCore.QObject):
         self.duration_spin.valueChanged.connect(self._on_duration_changed)
         chirp_layout.addRow("Duration:", self.duration_spin)
         
+        # Optimize duration button
+        self.optimize_duration_btn = QtWidgets.QPushButton("Optimize Duration")
+        self.optimize_duration_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                font-weight: bold;
+                padding: 6px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        self.optimize_duration_btn.clicked.connect(self._optimize_duration)
+        chirp_layout.addRow("", self.optimize_duration_btn)
+        
         self.amplitude_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.amplitude_slider.setRange(10, 100)
         self.amplitude_slider.setValue(int(self.amplitude * 100))
@@ -371,6 +389,23 @@ class SonarGUI(QtCore.QObject):
 
         # Initialize derived echo window label and validation
         self._refresh_echo_window()
+        
+        # Initialize global persistent audio stream early
+        # This prevents false first measurements by warming up the audio hardware
+        print("Initializing audio stream...")
+        try:
+            stream = audio.get_global_stream(self.cfg)
+            # Агрессивный warmup: несколько dummy измерений для стабилизации voiceHAT
+            # Это решает проблему плавающей амплитуды и прыгающих измерений по времени
+            import time
+            dummy_signal = np.zeros(int(self.cfg.sample_rate * 0.001), dtype=np.float32)
+            print("  Warming up audio hardware (this may take a few seconds)...")
+            for i in range(10):  # 10 warmup циклов для полной стабилизации
+                stream.play_and_record(dummy_signal, extra_record_seconds=0.01)
+                time.sleep(0.05)  # 50ms пауза между warmup циклами
+            print("✓ Audio stream initialized and stabilized")
+        except Exception as e:
+            print(f"Warning: Failed to initialize audio stream: {e}")
     
     def _toggle_sonar(self):
         """Enable/disable sonar."""
@@ -852,6 +887,90 @@ class SonarGUI(QtCore.QObject):
                 f"(min period {min_period:.3f}s = pulse {duration:.3f}s + echo {echo_s:.3f}s)"
             )
 
+    def _optimize_duration(self):
+        """Calculate optimal chirp duration based on distance and SNR requirements."""
+        # Create dialog for input parameters
+        dialog = QtWidgets.QDialog(self.win)
+        dialog.setWindowTitle("Optimize Chirp Duration")
+        dialog_layout = QtWidgets.QFormLayout()
+        dialog.setLayout(dialog_layout)
+        
+        # Distance input
+        distance_spin = QtWidgets.QDoubleSpinBox()
+        distance_spin.setRange(0.1, 200.0)
+        distance_spin.setDecimals(1)
+        distance_spin.setSingleStep(0.5)
+        distance_spin.setSuffix(" m")
+        distance_spin.setValue(self.max_distance_m)
+        dialog_layout.addRow("Target Distance:", distance_spin)
+        
+        # SNR input
+        snr_spin = QtWidgets.QDoubleSpinBox()
+        snr_spin.setRange(0.0, 60.0)
+        snr_spin.setDecimals(1)
+        snr_spin.setSingleStep(1.0)
+        snr_spin.setSuffix(" dB")
+        snr_spin.setValue(20.0)  # Default target SNR
+        dialog_layout.addRow("Target SNR:", snr_spin)
+        
+        # Bandwidth info (read-only)
+        bandwidth_hz = abs(self.end_freq - self.start_freq)
+        bandwidth_label = QtWidgets.QLabel(f"{bandwidth_hz:.0f} Hz")
+        dialog_layout.addRow("Bandwidth:", bandwidth_label)
+        
+        # Buttons
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok | 
+            QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        dialog_layout.addRow(button_box)
+        
+        # Show dialog
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        
+        # Get parameters
+        distance_m = distance_spin.value()
+        target_snr_db = snr_spin.value()
+        
+        try:
+            # Calculate optimal duration
+            optimal_duration, estimated_snr, resolution_m = optimize_chirp_duration(
+                distance_m=distance_m,
+                target_snr_db=target_snr_db,
+                bandwidth_hz=bandwidth_hz
+            )
+            
+            # Show results and ask for confirmation
+            result_msg = (
+                f"Optimal chirp duration: {optimal_duration*1000:.1f} ms\n\n"
+                f"Estimated SNR: {estimated_snr:.1f} dB\n"
+                f"Distance resolution: {resolution_m*1000:.1f} mm\n\n"
+                f"Apply this duration?"
+            )
+            
+            reply = QtWidgets.QMessageBox.question(
+                self.win,
+                "Optimization Result",
+                result_msg,
+                QtWidgets.QMessageBox.StandardButton.Yes | 
+                QtWidgets.QMessageBox.StandardButton.No
+            )
+            
+            if reply == QtWidgets.QMessageBox.StandardButton.Yes:
+                # Update duration spinbox
+                self.duration_spin.setValue(optimal_duration)
+                print(f"✓ Optimal duration applied: {optimal_duration*1000:.1f} ms")
+                
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(
+                self.win,
+                "Optimization Error",
+                f"Failed to calculate optimal duration:\n{e}"
+            )
+    
     def _on_update_rate_changed(self, update_rate: float):
         """Validate update rate vs duration when update rate changes.
 

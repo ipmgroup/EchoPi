@@ -133,7 +133,8 @@ class PersistentAudioStream:
         # Priming: prepend silent blocks and trim them from the returned
         # recording. This flushes stale buffered samples without shifting the
         # time origin of play_signal.
-        priming_blocks = 3 if self._jobs_run == 0 else 1
+        # Always use 3 blocks for voiceHAT stability (prevents amplitude drift)
+        priming_blocks = 3
         priming_frames = int(self.cfg.frames_per_buffer) * int(priming_blocks)
         play_buf = np.concatenate(
             [
@@ -174,7 +175,8 @@ class PersistentAudioStream:
                 recorded = recorded_full[
                     priming_frames:priming_frames + total_frames
                 ]
-                cooldown_s = 0.005
+                # Longer cooldown for voiceHAT stability (prevents amplitude drift)
+                cooldown_s = 0.020
                 self._next_allowed_time = time.monotonic() + cooldown_s
                 self._jobs_run += 1
                 return recorded
@@ -278,12 +280,27 @@ def monitor_microphone(cfg: AudioDeviceConfig, callback):
 def play_and_record(play_signal: np.ndarray, cfg: AudioDeviceConfig, extra_record_seconds: float = 0.1) -> np.ndarray:
     """Play signal and simultaneously record.
     
-    Uses direct sd.playrec for accurate synchronization instead of PersistentAudioStream.
+    Uses direct sd.playrec for accurate synchronization.
+    Includes microphone buffer priming to avoid stale data.
     """
     if extra_record_seconds < 0:
         raise ValueError(f"extra_record_seconds must be >= 0, got {extra_record_seconds}")
     
     play_signal = np.asarray(play_signal, dtype=np.float32)
+    
+    # Prime the microphone by doing a dummy recording to flush buffers
+    # This prevents old data from appearing at the start of the real recording
+    prime_samples = int(0.05 * cfg.sample_rate)  # 50ms priming
+    if prime_samples > 0:
+        _ = sd.rec(
+            prime_samples,
+            samplerate=cfg.sample_rate,
+            channels=1,
+            dtype='float32',
+            device=cfg.rec_device,
+            blocking=True
+        )
+        time.sleep(0.01)  # Small delay for driver to stabilize
     
     # Play and record simultaneously (synchronized by sounddevice)
     recording = sd.playrec(

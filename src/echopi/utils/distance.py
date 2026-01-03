@@ -6,7 +6,7 @@ from collections import deque
 from echopi.config import AudioDeviceConfig, ChirpConfig
 from echopi.dsp.chirp import generate_chirp, normalize
 from echopi.dsp.correlation import cross_correlation, parabolic_interpolate, find_peaks
-from echopi.io.audio import play_and_record
+from echopi.io.audio import get_global_stream
 
 
 # Скорость звука (м/с)
@@ -173,7 +173,9 @@ def measure_distance(
         guard_seconds=0.005,
     )
 
-    recorded = play_and_record(chirp_tx, cfg_audio, extra_record_seconds=extra_rec)
+    # Use global persistent stream for stable repeated measurements
+    stream = get_global_stream(cfg_audio)
+    recorded = stream.play_and_record(chirp_tx, extra_record_seconds=extra_rec)
     
     # Корреляция с эталоном (с окном)
     lag_samples, peak, corr = cross_correlation(chirp_ref, recorded)

@@ -97,12 +97,15 @@ class PersistentAudioStream:
         if now < self._next_allowed_time:
             time.sleep(self._next_allowed_time - now)
 
-        # One-time priming: write/read one block of silence to flush old buffered samples.
+        # One-time priming: write/read multiple blocks of silence to flush old buffered samples.
+        # Use 3 blocks for voiceHAT stability
         if not self._primed:
             try:
                 zeros = np.zeros(self.cfg.frames_per_buffer, dtype=np.float32)
-                self.stream.write(zeros.reshape(-1, 1))
-                self.stream.read(self.cfg.frames_per_buffer)
+                for _ in range(3):  # 3 priming blocks instead of 1
+                    self.stream.write(zeros.reshape(-1, 1))
+                    self.stream.read(self.cfg.frames_per_buffer)
+                    time.sleep(0.01)  # Small delay between priming blocks
             except Exception as e:
                 print(f"Warning: stream priming failed: {e}")
             self._primed = True
@@ -113,8 +116,8 @@ class PersistentAudioStream:
         # Enforce a minimum real-time cycle based on stream blocksize.
         blocks = max(1, int(np.ceil(total_frames / self.cfg.frames_per_buffer)))
         min_cycle_s = (blocks * self.cfg.frames_per_buffer) / float(self.cfg.sample_rate)
-        # Small additional cooldown to give the driver breathing room.
-        cooldown_s = 0.005
+        # Longer cooldown for voiceHAT stability (prevents timing and amplitude drift)
+        cooldown_s = 0.020
         start_t = time.monotonic()
         
         try:
