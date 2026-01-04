@@ -34,3 +34,4 @@ dist/
 test_*
 /MD
 /TEST
+unit/test_output/
