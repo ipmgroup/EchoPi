@@ -149,22 +149,15 @@ class SignalGenerator(QMainWindow):
         
         main_layout.addWidget(mode_group)
         
-        # Control buttons
+        # Control button (Start/Stop)
         control_layout = QHBoxLayout()
         control_layout.addStretch()
         
-        self.start_button = QPushButton("Start")
-        self.start_button.setMinimumSize(120, 50)
-        self.start_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-size: 14pt; font-weight: bold; }")
-        self.start_button.clicked.connect(self.start_signal)
-        control_layout.addWidget(self.start_button)
-        
-        self.stop_button = QPushButton("Stop")
-        self.stop_button.setMinimumSize(120, 50)
-        self.stop_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-size: 14pt; font-weight: bold; }")
-        self.stop_button.clicked.connect(self.stop_signal)
-        self.stop_button.setEnabled(False)
-        control_layout.addWidget(self.stop_button)
+        self.toggle_button = QPushButton("Start")
+        self.toggle_button.setMinimumSize(150, 60)
+        self.toggle_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-size: 14pt; font-weight: bold; }")
+        self.toggle_button.clicked.connect(self.toggle_signal)
+        control_layout.addWidget(self.toggle_button)
         
         control_layout.addStretch()
         main_layout.addLayout(control_layout)
@@ -277,6 +270,13 @@ class SignalGenerator(QMainWindow):
                 self.audio_stream.close()
                 self.audio_stream = None
         
+    def toggle_signal(self):
+        """Toggle signal generation on/off."""
+        if self.is_playing:
+            self.stop_signal()
+        else:
+            self.start_signal()
+    
     def start_signal(self):
         """Start signal generation."""
         if not self.is_playing:
@@ -307,8 +307,8 @@ class SignalGenerator(QMainWindow):
                     print(f"✓ Pulsed mode: {self.frequency} Hz, amplitude {self.amplitude:.2f}")
                     mode_text = "Pulsed"
                 
-                self.start_button.setEnabled(False)
-                self.stop_button.setEnabled(True)
+                self.toggle_button.setText("Stop")
+                self.toggle_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-size: 14pt; font-weight: bold; }")
                 self.continuous_radio.setEnabled(False)
                 self.pulsed_radio.setEnabled(False)
                 self.status_label.setText(f"Status: {mode_text} ({self.frequency} Hz, amplitude {self.amplitude:.2f})")
@@ -342,8 +342,8 @@ class SignalGenerator(QMainWindow):
                 self.generator_thread.join(timeout=2.0)
                 self.generator_thread = None
                 
-            self.start_button.setEnabled(True)
-            self.stop_button.setEnabled(False)
+            self.toggle_button.setText("Start")
+            self.toggle_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-size: 14pt; font-weight: bold; }")
             self.continuous_radio.setEnabled(True)
             self.pulsed_radio.setEnabled(True)
             self.status_label.setText("Status: Stopped")
